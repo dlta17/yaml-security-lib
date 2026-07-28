@@ -1,10 +1,11 @@
 YAML Security Lib — Commercial License Agreement
 =================================================
 
-Version 1.0 — Effective 2026-07-28
+Version 1.1 — Effective 2026-07-29
 
 Licensor: Nedal Ibrahim
 Contact: salamanedal@gmail.com
+GitHub: https://github.com/dlta17/yaml-security-lib
 Jurisdiction: Arab Republic of Egypt
 
 This Commercial License Agreement ("Agreement") is a paid license
@@ -40,8 +41,8 @@ available to you under the terms of the AGPL-3.0 only.
 
   Subject to payment of the applicable license fee and
   compliance with this Agreement, Licensor grants Licensee a
-  non-exclusive, non-transferable, worldwide, perpetual (for
-  the duration of the subscription term) right to:
+  non-exclusive, non-transferable, worldwide, annual,
+  renewable right to:
 
     a) Use, reproduce, and modify the Software;
     b) Incorporate the Software into proprietary products;
@@ -68,7 +69,8 @@ available to you under the terms of the AGPL-3.0 only.
             OEM/embedding rights.
 
   All fees are per-year and non-refundable. License must be
-  renewed annually to retain commercial rights.
+  renewed annually to retain commercial rights. Failure to
+  renew results in automatic reversion to AGPL-3.0 terms.
 
 ────────────────────────────────────────────────────────────
 
@@ -82,7 +84,8 @@ available to you under the terms of the AGPL-3.0 only.
     b) Any publication resulting from the use of the Software
        cites the original work:
          "YAML Security Lib — Nedal Ibrahim"
-         GitHub: https://github.com/nedal/yaml-security-lib
+         GitHub: https://github.com/dlta17/yaml-security-lib
+         DOI: [https://doi.org/10.5281/zenodo.XXXXXXX]
     c) A copy of any publication that references the Software
        is sent to salamanedal@gmail.com.
 
@@ -158,8 +161,8 @@ available to you under the terms of the AGPL-3.0 only.
 11. GOVERNING LAW
 
   This Agreement is governed by the laws of the Arab Republic
-  of Egypt. Any disputes shall be resolved in the courts of
-  Cairo, Egypt.
+  of Egypt. Any disputes shall be resolved in the competent
+  courts of Suez/Cairo, Egypt.
 
 ────────────────────────────────────────────────────────────
 
