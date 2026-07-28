@@ -1,0 +1,175 @@
+YAML Security Lib — Commercial License Agreement
+=================================================
+
+Version 1.0 — Effective 2026-07-28
+
+Licensor: Nedal Ibrahim
+Contact: salamanedal@gmail.com
+Jurisdiction: Arab Republic of Egypt
+
+This Commercial License Agreement ("Agreement") is a paid license
+that permits the use, modification, and distribution of the YAML
+Security Lib software ("Software") in proprietary/closed-source
+commercial products without the copyleft requirements of the
+GNU Affero General Public License v3 (AGPL-3.0).
+
+If you have not purchased a Commercial License, the Software is
+available to you under the terms of the AGPL-3.0 only.
+
+────────────────────────────────────────────────────────────
+
+1. DEFINITIONS
+
+  1.1 "Software" means the YAML Security Lib source code,
+      documentation, and any accompanying materials.
+
+  1.2 "Licensee" means the individual or entity that has
+      purchased this Commercial License.
+
+  1.3 "Commercial Use" means incorporation of the Software
+      into a product or service that is sold, licensed, or
+      offered for a fee, or used internally to generate revenue.
+
+  1.4 "Academic Use" means use solely for non-commercial
+      research, education, or teaching at an accredited
+      academic institution.
+
+────────────────────────────────────────────────────────────
+
+2. LICENSE GRANT
+
+  Subject to payment of the applicable license fee and
+  compliance with this Agreement, Licensor grants Licensee a
+  non-exclusive, non-transferable, worldwide, perpetual (for
+  the duration of the subscription term) right to:
+
+    a) Use, reproduce, and modify the Software;
+    b) Incorporate the Software into proprietary products;
+    c) Distribute the Software as part of proprietary products
+       without disclosing source code;
+    d) Use the Software for internal business operations.
+
+────────────────────────────────────────────────────────────
+
+3. LICENSE TIERS & FEES
+
+  Tier A — Freelancer (1 developer)
+    Annual fee: $199 USD
+    Covers: 1 developer, unlimited projects, personal use,
+            commercial products.
+
+  Tier B — Startup (2–10 developers)
+    Fee: By agreement (contact salamanedal@gmail.com)
+    Covers: Up to 10 developers, unlimited projects.
+
+  Tier C — Enterprise (unlimited developers)
+    Fee: By agreement (contact salamanedal@gmail.com)
+    Covers: Unlimited developers, worldwide distribution,
+            OEM/embedding rights.
+
+  All fees are per-year and non-refundable. License must be
+  renewed annually to retain commercial rights.
+
+────────────────────────────────────────────────────────────
+
+4. ACADEMIC USE
+
+  Academic institutions and researchers may use the Software
+  without purchasing a Commercial License, provided that:
+
+    a) The use is exclusively for non-commercial research,
+       education, or teaching.
+    b) Any publication resulting from the use of the Software
+       cites the original work:
+         "YAML Security Lib — Nedal Ibrahim"
+         GitHub: https://github.com/nedal/yaml-security-lib
+    c) A copy of any publication that references the Software
+       is sent to salamanedal@gmail.com.
+
+────────────────────────────────────────────────────────────
+
+5. RESTRICTIONS
+
+  Licensee shall not:
+
+    a) Remove or alter any copyright, trademark, or license
+       notices from the Software.
+    b) Use the trade name "YAML Security Lib" or the Licensor's
+       name to promote products without prior written consent.
+    c) Sublicense, resell, or distribute the Software as a
+       standalone product (i.e., as a competing library).
+    d) Use the Software in any manner that violates applicable
+       law.
+
+────────────────────────────────────────────────────────────
+
+6. TRADEMARK
+
+  "YAML Security Lib" and associated logos are trademarks of
+  the Licensor. This Agreement does not grant any rights to
+  use these trademarks except as required for reasonable and
+  customary use in describing the origin of the Software.
+
+────────────────────────────────────────────────────────────
+
+7. CONTRIBUTIONS (CLA)
+
+  Any contribution submitted to the Software repository
+  (including but not limited to code, documentation, bug
+  reports) is subject to the following terms:
+
+    a) The contributor grants the Licensor a perpetual,
+       worldwide, royalty-free, irrevocable license to use,
+       modify, distribute, and sublicense the contribution
+       under both the AGPL-3.0 and this Commercial License.
+    b) The contributor warrants that they have the right to
+       grant this license.
+    c) No compensation will be provided for contributions.
+
+────────────────────────────────────────────────────────────
+
+8. WARRANTY DISCLAIMER
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+  KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+  WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+  PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+  LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
+
+────────────────────────────────────────────────────────────
+
+9. LIMITATION OF LIABILITY
+
+  IN NO EVENT SHALL THE LICENSOR'S TOTAL LIABILITY EXCEED
+  THE AMOUNT PAID BY THE LICENSEE FOR THIS LICENSE.
+
+────────────────────────────────────────────────────────────
+
+10. TERMINATION
+
+  This Agreement terminates automatically if Licensee fails
+  to pay the annual fee or breaches any term. Upon
+  termination, Licensee must cease all use of the Software
+  under this Agreement. The AGPL-3.0 terms continue to apply.
+
+────────────────────────────────────────────────────────────
+
+11. GOVERNING LAW
+
+  This Agreement is governed by the laws of the Arab Republic
+  of Egypt. Any disputes shall be resolved in the courts of
+  Cairo, Egypt.
+
+────────────────────────────────────────────────────────────
+
+12. ENTIRE AGREEMENT
+
+  This Agreement constitutes the entire agreement between
+  the parties and supersedes any prior understandings or
+  agreements.
+
+────────────────────────────────────────────────────────────
+
+To purchase a Commercial License, contact:
+  salamanedal@gmail.com
