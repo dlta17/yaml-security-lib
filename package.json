@@ -17,6 +17,7 @@
     "src/index.cjs",
     "src/index.d.ts",
     "index.cjs",
+    "dist/",
     "LICENSE",
     "LICENSE.COMMERCIAL"
   ],

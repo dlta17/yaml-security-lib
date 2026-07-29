@@ -76,12 +76,20 @@ function unescapeYaml(s) {
   });
 }
 
+// ── Byte length (works in Node & browser) ────────────────
+
+function byteLength(s) {
+  if (typeof Buffer !== 'undefined') return Buffer.byteLength(s, 'utf8');
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).length;
+  return s.length;
+}
+
 // ── YAML Parser ──────────────────────────────────────────
 
 function yamlToJS(yamlStr, cfg, _depth) {
   if (_depth === undefined) _depth = 0;
   if (_depth > 50) throw new YAMLException('YAML: recursion too deep (>50) — possible anchor bomb');
-  if (Buffer.byteLength(yamlStr, 'utf8') > cfg.maxInputBytes) {
+  if (byteLength(yamlStr) > cfg.maxInputBytes) {
     throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
   }
 
@@ -114,7 +122,9 @@ function yamlToJS(yamlStr, cfg, _depth) {
   function track(node, weight) {
     produced += weight || 1;
     if (produced > cfg.maxNodes)
-      throw err('maxNodes limit exceeded (possible bomb)');
+      throw err('nodes limit exceeded (possible bomb)');
+    if (produced > cfg.maxExpansion)
+      throw err('expansion limit exceeded (possible bomb)');
     return node;
   }
 
@@ -571,7 +581,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
 // ── YAML Multi-Document ─────────────────────────────────
 
 function parseAllYaml(yamlStr, cfg) {
-  if (Buffer.byteLength(yamlStr, 'utf8') > cfg.maxInputBytes)
+  if (byteLength(yamlStr) > cfg.maxInputBytes)
     throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
   const docs = [];
   const parts = yamlStr.split(/\n(?:---|\.\.\.)[\t ]*(?:\n|$)/);
