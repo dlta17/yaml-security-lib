@@ -9,15 +9,24 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node: [18, 22]
+        node: [20, 22]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ matrix.node }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ matrix.node }}-
+      - run: npm ci
       - run: node --version
       - name: Test ESM import
         run: node --input-type=module -e "import {YamlSecurity} from './src/index.js'; process.exit(0)"
@@ -25,8 +34,9 @@ jobs:
         run: node test/index.js
       - name: Test fuzz
         run: node test/fuzz.js
+      - name: Build CJS
+        run: npm run build:cjs
       - name: Test CJS
-        shell: bash
-        run: |
-          npm run build:cjs
-          node -e "const {YamlSecurity}=require('./index.cjs');const p=new YamlSecurity();const r=p.parse('test: ok');process.exit(r.ok?0:1)"
+        run: node -e "const {YamlSecurity}=require('./index.cjs');const p=new YamlSecurity();const r=p.parse('test: ok');process.exit(r.ok?0:1)"
+      - name: Build browser bundles
+        run: npm run build:browser

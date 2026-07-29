@@ -50,7 +50,7 @@ export class YAMLException extends Error {
 // ── Prototype Pollution Guard ────────────────────────────
 
 function safeAssign(obj, key, value) {
-  if (key === '__proto__' || key === 'constructor' || key === 'prototype')
+  if (key === '__proto__' || key === 'constructor')
     throw new YAMLException('Security: cannot set key "' + key + '" — prototype pollution blocked');
   obj[key] = value;
 }
@@ -183,7 +183,9 @@ function yamlToJS(yamlStr, cfg, _depth) {
     return val;
   }
 
-  function parseInlineFlow(str) {
+  function parseInlineFlow(str, _flowDepth) {
+    if (_flowDepth === undefined) _flowDepth = 0;
+    if (_flowDepth > 100) throw new YAMLException('YAML: flow nesting too deep (>100)');
     const s = str.trim();
     if (s.startsWith('[')) {
       const items = [];
@@ -192,7 +194,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
         const c = s[i];
         if (c === ']') { const exp = deepSize(items, 0); return { value: track(items, exp), endPos: i + 1 }; }
         if (c === ',' || c === ' ') { i++; continue; }
-        const r = parseInlineFlow(s.slice(i));
+        const r = parseInlineFlow(s.slice(i), _flowDepth + 1);
         items.push(track(r.value));
         i += r.endPos;
       }
@@ -208,10 +210,21 @@ function yamlToJS(yamlStr, cfg, _depth) {
         if (c === ',' || c === ' ') { i++; continue; }
         let key;
         if (s[i] === '"' || s[i] === "'") {
-          const close = s.indexOf(s[i], i + 1);
+          const quote = s[i];
+          let close = -1;
+          let pos = i + 1;
+          if (quote === '"') {
+            while (pos < s.length) {
+              if (s[pos] === '\\') { pos += 2; continue; }
+              if (s[pos] === '"') { close = pos; break; }
+              pos++;
+            }
+          } else {
+            close = s.indexOf("'", i + 1);
+          }
           if (close < 0) { const exp = deepSize(obj, 0); return { value: track(obj, exp), endPos: s.length }; }
           key = s.slice(i + 1, close);
-          if (s[i] === '"') key = unescapeYaml(key);
+          if (quote === '"') key = unescapeYaml(key);
           i = close + 1;
         } else {
           let j = i;
@@ -222,12 +235,12 @@ function yamlToJS(yamlStr, cfg, _depth) {
         if (seenKeys.has(key)) throw new YAMLException('YAML: Duplicate key: "' + key + '"');
         seenKeys.add(key);
         while (i < s.length && (s[i] === ' ' || s[i] === ':')) i++;
-        const r = parseInlineFlow(s.slice(i));
+        const r = parseInlineFlow(s.slice(i), _flowDepth + 1);
         const val = r.value;
         if (typeof val === 'string' && val.startsWith('&')) {
           const aname = val.slice(1).split(/[ ,\]}]/)[0];
           const rest = val.slice(aname.length + 1).trim();
-          const rr = parseInlineFlow(rest);
+          const rr = parseInlineFlow(rest, _flowDepth + 1);
           const anchored = track(rr.value);
           const srcAnchor = rest.startsWith('*') ? rest.slice(1).split(/[ ,}\]]/)[0] : null;
           setAnchor(aname, anchored, srcAnchor);
@@ -255,7 +268,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
       const afterName = s.slice(1 + nameEnd);
       const rest = afterName.trim();
       const wsLen = afterName.length - rest.length;
-      const r = rest ? parseInlineFlow(rest) : { value: null, endPos: 0 };
+      const r = rest ? parseInlineFlow(rest, _flowDepth + 1) : { value: null, endPos: 0 };
       const val = track(r.value !== undefined ? r.value : rest);
       const restTrimmed = rest.trim();
       const srcAnchor = restTrimmed.startsWith('*') ? restTrimmed.slice(1).split(/[ ,}\]]/)[0] : null;
@@ -270,7 +283,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
     if (tagPrefix) {
       const tagName = tagPrefix[0].slice(2).trim();
       const rest = s.slice(tagPrefix[0].length);
-      const r = parseInlineFlow(rest);
+      const r = parseInlineFlow(rest, _flowDepth + 1);
       let val = r.value;
       if (val === undefined) val = parseScalar(rest);
       if (tagName === 'str') val = String(val);
@@ -325,7 +338,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
     return i;
   }
 
-  // Pre-scan for top-level anchors
+  // Pre-scan for anchors at all levels (not just top-level)
   for (let i = 0; i < contentLines.length; i++) {
     const line = contentLines[i];
     const trimmed = line.trim();
@@ -333,14 +346,16 @@ function yamlToJS(yamlStr, cfg, _depth) {
       const space = trimmed.indexOf(' ');
       const aname = trimmed.slice(1, space);
       const rest = trimmed.slice(space + 1);
+      if (anchors[aname] !== undefined) continue; // already scanned
       if (rest.startsWith('*')) {
         const srcAnchor = rest.slice(1).trim();
         const val = track(resolveAlias(srcAnchor));
         setAnchor(aname, val, srcAnchor);
       } else if (rest.includes(':')) {
+        const indent = getIndent(line);
         const dummy = rest + '\n' + contentLines.slice(i + 1)
-          .filter(l => getIndent(l) > getIndent(line))
-          .map(l => l.slice(getIndent(line)))
+          .filter(l => getIndent(l) > indent)
+          .map(l => l.slice(indent))
           .join('\n');
         setAnchor(aname, track(yamlToJS(dummy, cfg, _depth + 1)));
       } else {
@@ -403,18 +418,30 @@ function yamlToJS(yamlStr, cfg, _depth) {
         let key;
         const afterIndent = line.slice(indent);
         if (afterIndent.startsWith('"')) {
-          const close = afterIndent.indexOf('"', 1);
+          let close = -1;
+          let pos = 1;
+          while (pos < afterIndent.length) {
+            if (afterIndent[pos] === '\\') { pos += 2; continue; }
+            if (afterIndent[pos] === '"') { close = pos; break; }
+            pos++;
+          }
           if (close > 0) { colonIdx = indent + afterIndent.indexOf(':', close); key = unescapeYaml(afterIndent.slice(1, close)); }
         } else if (afterIndent.startsWith("'")) {
-          const close = afterIndent.indexOf("'", 1);
-          if (close > 0) { colonIdx = indent + afterIndent.indexOf(':', close); key = afterIndent.slice(1, close); }
+          let close = -1;
+          let pos = 1;
+          while (pos < afterIndent.length) {
+            if (afterIndent[pos] === "'" && pos + 1 < afterIndent.length && afterIndent[pos + 1] === "'") { pos += 2; continue; }
+            if (afterIndent[pos] === "'") { close = pos; break; }
+            pos++;
+          }
+          if (close > 0) { colonIdx = indent + afterIndent.indexOf(':', close); key = afterIndent.slice(1, close).replace(/''/g, "'"); }
         }
         if (colonIdx < 0) { colonIdx = line.indexOf(':'); key = line.slice(indent, colonIdx).trim(); }
         if (colonIdx < 0) { i++; continue; }
         let valStr = line.slice(colonIdx + 1).trim();
 
         // Support explicit block scalar indent indicators (|1, |2, >1, >2, etc.)
-        const blockMatch = valStr.match(/^(\||>)([\-+]?\d*)$/);
+        const blockMatch = valStr.match(/^(\||>)(\d*)([\-+]?)$/);
         if (blockMatch && valStr.replace(/^!!\w+\s*/, '').trim() === blockMatch[0]) {
           const blockLines = [];
           let j = i + 1;
@@ -584,12 +611,23 @@ function parseAllYaml(yamlStr, cfg) {
   if (byteLength(yamlStr) > cfg.maxInputBytes)
     throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
   const docs = [];
-  const parts = yamlStr.split(/\n(?:---|\.\.\.)[\t ]*(?:\n|$)/);
-  for (const part of parts) {
-    const trimmed = part.trim();
-    if (trimmed === '' || trimmed === '...') continue;
-    docs.push(yamlToJS(trimmed, cfg));
+  const lines = yamlStr.split('\n');
+  let current = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    // Skip directives and blank lines at document start
+    if (current.length === 0 && (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('%') || trimmed === '---' || trimmed === '...')) continue;
+    if (trimmed === '---' || trimmed === '...') {
+      if (current.length > 0) {
+        docs.push(yamlToJS(current.join('\n'), cfg));
+        current = [];
+      }
+      continue;
+    }
+    current.push(line);
   }
+  if (current.length > 0) docs.push(yamlToJS(current.join('\n'), cfg));
   return docs;
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "yaml-security-lib",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Secure YAML parser — duplicate key detection, alias depth limiting, prototype pollution prevention",
   "main": "index.cjs",
   "types": "src/index.d.ts",
@@ -25,8 +25,11 @@
   "scripts": {
     "test": "node test/index.js && node test/fuzz.js",
     "example": "node examples/basic.js",
-    "build": "node -e \"const{execSync:e}=require('child_process');e('npx esbuild src/index.js --bundle --format=esm --outfile=src/index.min.js --minify',{stdio:'inherit'});e('npx esbuild src/index.js --bundle --format=cjs --outfile=src/index.cjs --minify',{stdio:'inherit'});console.log('Built src/index.min.js + src/index.cjs');\"",
-    "build:browser": "node -e \"const{execSync:e}=require('child_process'),{mkdirSync:m}=require('fs');m('dist',{recursive:true});e('npx esbuild src/index.js --bundle --format=esm --outfile=dist/yaml-security.mjs --minify',{stdio:'inherit'});e('npx esbuild src/index.js --bundle --format=iife --global-name=YamlSecurity --outfile=dist/yaml-security.min.js --minify',{stdio:'inherit'});console.log('Built dist/');\""
+    "build": "npm run build:cjs && npm run build:esm",
+    "build:cjs": "rollup -c --environment FORMAT:cjs",
+    "build:esm": "rollup -c --environment FORMAT:esm",
+    "build:types": "tsc --emitDeclarationOnly",
+    "build:browser": "mkdir -p dist && rollup -c --environment FORMAT:browser-iife && rollup -c --environment FORMAT:browser-esm"
   },
   "keywords": [
     "yaml",
@@ -44,6 +47,10 @@
     "url": "git+https://github.com/dlta17/yaml-security-lib.git"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-terser": "^1.0.0",
+    "rollup": "^4.62.3"
   }
 }
