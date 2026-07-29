@@ -18,10 +18,12 @@
     "LICENSE",
     "LICENSE.COMMERCIAL"
   ],
+  "sideEffects": false,
   "scripts": {
     "test": "node test/index.js && node test/fuzz.js",
     "example": "node examples/basic.js",
-    "build:cjs": "node -e \"const f=require('fs'),s=f.readFileSync('src/index.js','utf8').replace(/^export function /gm,'function ').replace(/^export class /gm,'class ')+'\\nmodule.exports={setLimits,YamlSecurity};';f.writeFileSync('src/index.cjs',s);console.log('src/index.cjs generated ('+s.split('\\\\n').length+' lines)');\""
+    "build:cjs": "node -e \"const f=require('fs'),s=f.readFileSync('src/index.js','utf8').replace(/^export function /gm,'function ').replace(/^export class /gm,'class ')+'\\nmodule.exports={setLimits,YamlSecurity};';f.writeFileSync('src/index.cjs',s);console.log('src/index.cjs generated ('+s.split('\\\\n').length+' lines)');\"",
+    "prepare": "npm run build:cjs"
   },
   "keywords": [
     "yaml",

@@ -8,8 +8,28 @@ function assert(cond, msg) {
   else { failed++; console.error('FAIL:', msg); }
 }
 
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return a === b;
+  if (typeof a !== typeof b) return false;
+  if (typeof a !== 'object') return a === b;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!deepEqual(a[i], b[i])) return false;
+    return true;
+  }
+  const ka = Object.keys(a).sort();
+  const kb = Object.keys(b).sort();
+  if (ka.length !== kb.length) return false;
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] !== kb[i]) return false;
+    if (!deepEqual(a[ka[i]], b[ka[i]])) return false;
+  }
+  return true;
+}
 function assertEqual(a, b, msg) {
-  if (JSON.stringify(a) === JSON.stringify(b)) { passed++; }
+  if (deepEqual(a, b)) { passed++; }
   else { failed++; console.error('FAIL:', msg, '- got:', JSON.stringify(a), 'expected:', JSON.stringify(b)); }
 }
 
@@ -81,6 +101,35 @@ assertEqual(p.parse('%YAML 1.2\n---\nhello: world').result, { hello: 'world' }, 
 assertEqual(p.parse('---\nkey: value').result, { key: 'value' }, '--- doc start');
 assertEqual(p.parse('x: 1\n...\ny: 2').result, { x: 1 }, '... doc end stops parsing');
 assertEqual(p.parse('# comment\n%YAML 1.2\n---\nval: 42').result, { val: 42 }, 'directives with comments');
+
+// ── Escape sequences in double-quoted strings ──
+assertEqual(p.parse('x: "hello\\nworld"').result, { x: 'hello\nworld' }, 'double-quoted \\n');
+assertEqual(p.parse('x: "tab\\there"').result, { x: 'tab\there' }, 'double-quoted \\t');
+assertEqual(p.parse('x: "back\\\\slash"').result, { x: 'back\\slash' }, 'double-quoted \\\\');
+assertEqual(p.parse('x: "quo\\"ted"').result, { x: 'quo"ted' }, 'double-quoted \\"');
+assertEqual(p.parse('x: "null\\0char"').result, { x: 'null\x00char' }, 'double-quoted \\0');
+assertEqual(p.parse('x: "\\x1Bescape"').result, { x: '\x1Bescape' }, 'double-quoted \\x hex');
+
+// ── Merge key list ──
+const mergeList = p.parse('base: &b\n  x: 1\n  y: 2\nextra: &e\n  z: 3\nmerged:\n  <<: [*b, *e]\n  w: 4').result;
+assertEqual(mergeList.merged, { x: 1, y: 2, z: 3, w: 4 }, 'merge key list (<<: [*a,*b])');
+
+// ── Standalone scalars ──
+assertEqual(p.parse('hello').result, 'hello', 'standalone scalar string');
+assertEqual(p.parse('42').result, 42, 'standalone scalar number');
+assertEqual(p.parse('true').result, true, 'standalone scalar bool');
+assertEqual(p.parse('null').result, null, 'standalone scalar null');
+
+// ── Tab indentation (YAML 1.2 disallows tabs, but handle without crash) ──
+assert(p.parse('a:\n\tb: 1').ok !== undefined, 'tab indentation handled without crash');
+
+// ── Block scalar indent indicators ──
+assertEqual(p.parse('x: |1\n  hello').result, { x: 'hello\n' }, 'literal block indent |1');
+assertEqual(p.parse('x: >1\n  hello\n  world').result, { x: 'hello world\n' }, 'folded block indent >1');
+
+// ── ... as multi-doc separator in parseAll ──
+const multiEnd = p.parseAll('a: 1\n...\nb: 2');
+assertEqual(multiEnd.result, [{ a: 1 }, { b: 2 }], '... as multi-doc separator');
 
 // ── Multi-document ──
 const docs = p.parseAll('a: 1\n---\nb: 2\n---\nc: 3');

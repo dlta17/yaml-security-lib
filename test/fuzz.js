@@ -12,8 +12,12 @@ function assert(cond, msg) {
 function assertSafe(yamlStr, desc) {
   const r = p.parse(yamlStr);
   if (!r.ok) blocked++;
-  // Should never crash or throw
   assert(typeof r.ok === 'boolean', `${desc}: should return ok boolean`);
+  if (r.ok) {
+    assert(typeof r.result !== 'undefined' || r.result === null, `${desc}: result should be defined`);
+  } else {
+    assert(typeof r.error === 'string', `${desc}: error should be a string`);
+  }
 }
 
 function assertThrows(fn, msg) {
@@ -121,8 +125,8 @@ function deepNest(depth) {
 assertSafe(deepNest(100), 'deep nesting 100 levels');
 
 // ── Mixed tabs/spaces ──
-assertSafe('a:\n\tb: 1', 'tab indentation');
-assertSafe('a:\n \tb: 1', 'mixed tab+space');
+assertSafe('a:\n\tb: 1', 'tab in indentation');
+assertSafe('a:\n  \tb: 1', 'mixed tab+space');
 
 // ── Document separators ──
 assertSafe('%YAML 1.2\n---\n%TAG !t! tag:x:\n---\na: 1', 'directives before each doc');
@@ -148,10 +152,9 @@ assertSafe(genBomb(20), 'bomb 20 levels');
 function genChain(n) {
   let s = '';
   for (let i = 0; i < n; i++) {
-    const name = String.fromCharCode(97 + (i % 26));
-    s += i === 0 ? `&${name} ${i}\n` : `&${name} *${String.fromCharCode(97 + ((i-1) % 26))}\n`;
+    s += `&a${i} ${i === 0 ? i : '*a' + (i-1)}\n`;
   }
-  s += `key: *${String.fromCharCode(97 + ((n-1) % 26))}`;
+  s += `key: *a${n-1}`;
   return s;
 }
 assertSafe(genChain(100), 'alias chain 100');
@@ -216,7 +219,8 @@ const pd = p.parseAll;
 assertSafe('a: 1\n...\nb: 2\n...\nc: 3', 'multi-doc with ... separators');
 
 // ── Recursive yamlToJS guard ──
-assertSafe(p.parse('x: [1, [2, [3, [4, [5, [6, [7, [8, [9, [10, [11, [12, [13, [14, [15, [16, [17, [18, [19, [20, [21, [22, [23, [24, [25]]]]]]]]]]]]]]]]]]]]]]]]').ok, 'deep seq 25 levels handled safely');
+const deepSeqYaml = 'x: [1, [2, [3, [4, [5, [6, [7, [8, [9, [10, [11, [12, [13, [14, [15, [16, [17, [18, [19, [20, [21, [22, [23, [24, [25]]]]]]]]]]]]]]]]]]]]]]]]';
+assertSafe(deepSeqYaml, 'deep seq 25 levels handled safely');
 
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed, ${blocked} blocked (expected)`);

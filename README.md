@@ -4,7 +4,7 @@
 - **Duplicate keys** — Privilege escalation (K8s, GitLab, Ansible)
 - **Anchor bombs** — Alias depth tracking (prevents OOM/exhaustion)
 - **Prototype pollution** — `__proto__` / `constructor` / `prototype` blocked
-- **Trailing-space corruption** — Flow scalars auto-trimmed
+- **Billion Laughs** — Expansion limit detection
 
 Zero dependencies. Works in Node.js ≥16 and all modern browsers.
 
@@ -22,17 +22,17 @@ import { YamlSecurity } from 'yaml-security-lib'
 
 const parser = new YamlSecurity()
 
-// Parse safely
+// Parse safely — always returns { ok, result } or { ok, error }
 parser.parse("name: أحمد\nage: 30")
 // → { ok: true, result: { name: 'أحمد', age: 30 } }
 
-// Duplicate key → thrown
+// Duplicate key → caught safely
 parser.parse("x: 1\nx: 2")
-// → Error: Duplicate key 'x'
+// → { ok: false, error: 'YAML at line 2: Duplicate key: "x"' }
 
-// Anchor bomb → thrown
+// Anchor bomb → caught safely
 parser.parse("&a *a")  // self-reference
-// → Error: Alias depth exceeds limit (10)
+// → { ok: false, error: 'YAML: alias depth exceeds limit (10)' }
 ```
 
 ## API
@@ -42,13 +42,42 @@ parser.parse("&a *a")  // self-reference
 | Option | Default | Description |
 |--------|---------|-------------|
 | `maxAliasDepth` | `10` | Max anchor indirection depth |
-| `maxNodes` | `5000` | Max parsed nodes before abort |
+| `maxNodes` | `10000` | Max parsed nodes before abort |
+| `maxExpansion` | `100000` | Max expansion factor (Billion Laughs) |
 
-### `parse(str)` → `{ ok, result }` or throws
+### `parse(str)` → `{ ok, result } | { ok, error }`
 
-### `dump(obj)` → `{ ok, result }`
+Parses a YAML string. Always returns an object — never throws.
 
-### Static: `YamlSecurity.setLimits(opts)`
+### `parseAll(str)` → `{ ok, result } | { ok, error }`
+
+Parses multi-document YAML (`---` or `...` separated). Returns an array.
+
+### `dump(obj, opts?)` → `{ ok, result } | { ok, error }`
+
+Serializes a JavaScript value to YAML. Options: `indent` (default `2`), `flowLevel` (default `6`).
+
+### `parseToJSON(str)` → `{ ok, result } | { ok, error }`
+
+Parses YAML and returns pretty-printed JSON string.
+
+### `YamlSecurity.setLimits(opts)`
+
+Globally adjust limits for all parsers (affects existing and new instances).
+
+### Constructor vs `setLimits`
+
+Constructor options only affect that specific instance. `setLimits` affects all instances globally.
+
+```js
+const strict = new YamlSecurity({ maxAliasDepth: 2 })
+strict.parse("&a 1\n&b *a\n&c *b\nk: *c")
+// → { ok: false, error: '...alias depth exceeds limit (2)' }
+
+const normal = new YamlSecurity()
+normal.parse("&a 1\n&b *a\n&c *b\nk: *c")
+// → { ok: true, result: { k: 1 } }  ← unaffected by strict config
+```
 
 ## License
 

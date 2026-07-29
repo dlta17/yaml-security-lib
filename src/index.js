@@ -10,18 +10,20 @@ const DEFAULTS = {
   maxAlias: 100,
   maxAliasDepth: 10,
   maxExpansion: 100_000,
+  maxInputMB: 1,
   maxInputBytes: 1_048_576,  // 1MB
 };
 
-let cfg = { ...DEFAULTS };
+let _baseCfg = { ...DEFAULTS };
 
 export function setLimits(opts) {
-  if (!opts || Object.keys(opts).length === 0) { cfg = { ...DEFAULTS }; return; }
-  if (opts.maxNodes !== undefined) cfg.maxNodes = opts.maxNodes;
-  if (opts.maxAlias !== undefined) cfg.maxAlias = opts.maxAlias;
-  if (opts.maxAliasDepth !== undefined) cfg.maxAliasDepth = opts.maxAliasDepth;
-  if (opts.maxExpansion !== undefined) cfg.maxExpansion = opts.maxExpansion;
-  if (opts.maxInputMB !== undefined) cfg.maxInputBytes = Math.round(opts.maxInputMB * 1_048_576);
+  if (!opts || Object.keys(opts).length === 0) { _baseCfg = { ...DEFAULTS }; return; }
+  if (opts.maxNodes !== undefined) _baseCfg.maxNodes = opts.maxNodes;
+  if (opts.maxAlias !== undefined) _baseCfg.maxAlias = opts.maxAlias;
+  if (opts.maxAliasDepth !== undefined) _baseCfg.maxAliasDepth = opts.maxAliasDepth;
+  if (opts.maxExpansion !== undefined) _baseCfg.maxExpansion = opts.maxExpansion;
+  if (opts.maxInputMB !== undefined) _baseCfg.maxInputBytes = Math.round(opts.maxInputMB * 1_048_576);
+  if (opts.maxInputBytes !== undefined) _baseCfg.maxInputBytes = opts.maxInputBytes;
 }
 
 // ── Billion Laughs / Expansion Guard ────────────────────
@@ -44,14 +46,35 @@ function safeAssign(obj, key, value) {
   obj[key] = value;
 }
 
+// ── YAML Escape Unescaping ───────────────────────────────
+
+const ESC_MAP = {
+  '0': '\x00', 'a': '\x07', 'b': '\x08', 't': '\t', 'n': '\n',
+  'v': '\x0b', 'f': '\x0c', 'r': '\r', 'e': '\x1b',
+  ' ': ' ',  '"': '"',  '/': '/', '\\': '\\', 'N': '\x85',
+  '_': '\xa0', 'L': '\u2028', 'P': '\u2029',
+};
+function unescapeYaml(s) {
+  return s.replace(/\\(x[\da-fA-F]{1,2}|u[\da-fA-F]{4}|U[\da-fA-F]{8}|.)/g, (m, seq) => {
+    const ch = seq[0];
+    if (ch === 'x') return String.fromCharCode(parseInt(seq.slice(1), 16));
+    if (ch === 'u') return String.fromCharCode(parseInt(seq.slice(1), 16));
+    if (ch === 'U') {
+      const cp = parseInt(seq.slice(1), 16);
+      return cp > 0xFFFF ? String.fromCharCode(0xD800 + ((cp - 0x10000) >> 10), 0xDC00 + ((cp - 0x10000) & 0x3FF)) : String.fromCharCode(cp);
+    }
+    return ESC_MAP[ch] !== undefined ? ESC_MAP[ch] : ch;
+  });
+}
+
 // ── YAML Parser ──────────────────────────────────────────
 
-let _yamlRecDepth = 0;
-
-function yamlToJS(yamlStr) {
-  if (++_yamlRecDepth > 50) { _yamlRecDepth--; throw new Error('YAML: recursion too deep (>50) — possible anchor bomb'); }
-  if (yamlStr.length > cfg.maxInputBytes) { _yamlRecDepth--; throw new Error('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)'); }
-  try {
+function yamlToJS(yamlStr, cfg, _depth) {
+  if (_depth === undefined) _depth = 0;
+  if (_depth > 50) throw new Error('YAML: recursion too deep (>50) — possible anchor bomb');
+  if (Buffer.byteLength(yamlStr, 'utf8') > cfg.maxInputBytes) {
+    throw new Error('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
+  }
 
   const lines = yamlStr.split('\n');
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
@@ -82,7 +105,7 @@ function yamlToJS(yamlStr) {
   function track(node, weight) {
     produced += weight || 1;
     if (produced > cfg.maxNodes)
-      throw err('expansion limit exceeded (possible bomb)');
+      throw err('maxNodes limit exceeded (possible bomb)');
     return node;
   }
 
@@ -101,9 +124,22 @@ function yamlToJS(yamlStr) {
     return val;
   }
 
+  function applyTags(s) {
+    // Apply %TAG directive shortcuts to !!tags
+    for (const handle of Object.keys(tags)) {
+      if (s.startsWith(handle)) {
+        const rest = s.slice(handle.length);
+        // Only apply if handle is ! or !something! and rest starts with a non-empty tag
+        if (rest.length > 0) return rest;
+      }
+    }
+    return s;
+  }
+
   function parseScalar(s) {
     const trimmed = s.trim();
-    const tagMatch = trimmed.match(/^!!(\w+)\s*/);
+    const applied = applyTags(trimmed);
+    const tagMatch = applied.match(/^!!(\w+)\s*/);
     const tagName = tagMatch ? tagMatch[1] : null;
     const val = tagMatch ? trimmed.slice(tagMatch[0].length) : trimmed;
 
@@ -118,9 +154,12 @@ function yamlToJS(yamlStr) {
     if (val === 'true') return true;
     if (val === 'false') return false;
     const num = Number(val);
-    if (!isNaN(num) && val !== '') return num;
-    if ((val.startsWith('"') && val.endsWith('"')) ||
-        (val.startsWith("'") && val.endsWith("'")))
+    if (!isNaN(num) && val !== '' && val.trim() !== '') return num;
+    if (val.startsWith('"') && val.endsWith('"')) {
+      const inner = val.slice(1, -1);
+      return unescapeYaml(inner);
+    }
+    if ((val.startsWith("'") && val.endsWith("'")))
       return val.slice(1, -1);
     return val;
   }
@@ -153,11 +192,12 @@ function yamlToJS(yamlStr) {
           const close = s.indexOf(s[i], i + 1);
           if (close < 0) { const exp = deepSize(obj, 0); return { value: track(obj, exp), endPos: s.length }; }
           key = s.slice(i + 1, close);
+          if (s[i] === '"') key = unescapeYaml(key);
           i = close + 1;
         } else {
           let j = i;
-          while (j < s.length && s[j] !== ':' && s[j] !== ',' && s[j] !== '}' && s[j] !== ' ') j++;
-          key = s.slice(i, j).replace(/[ \t]+$/, '');
+          while (j < s.length && s[j] !== ':' && s[j] !== ',' && s[j] !== '}') j++;
+          key = s.slice(i, j).trim();
           i = j;
         }
         if (seenKeys.has(key)) throw new Error('YAML: Duplicate key: "' + key + '"');
@@ -223,8 +263,17 @@ function yamlToJS(yamlStr) {
       return { value: track(val), endPos: tagPrefix[0].length + r.endPos };
     }
     if (s.startsWith('"')) {
-      const close = s.indexOf('"', 1);
-      if (close > 0) return { value: track(s.slice(1, close)), endPos: close + 1 };
+      let close = -1;
+      let pos = 1;
+      while (pos < s.length) {
+        if (s[pos] === '\\') { pos += 2; continue; }
+        if (s[pos] === '"') { close = pos; break; }
+        pos++;
+      }
+      if (close > 0) {
+        const inner = s.slice(1, close);
+        return { value: track(unescapeYaml(inner)), endPos: close + 1 };
+      }
     }
     if (s.startsWith("'")) {
       const close = s.indexOf("'", 1);
@@ -233,7 +282,8 @@ function yamlToJS(yamlStr) {
     let end = s.search(/[,}\]\s]/);
     if (end < 0) return { value: track(parseScalar(s)), endPos: s.length };
     if (end === 0) return { value: track(parseScalar(s)), endPos: s.length };
-    let raw = s.slice(0, end).replace(/[ \t]+$/, '');
+    let raw = s.slice(0, end);
+    if (raw.endsWith(' ')) raw = raw.trimEnd();
     return { value: track(parseScalar(raw)), endPos: end };
   }
 
@@ -252,7 +302,7 @@ function yamlToJS(yamlStr) {
 
   function getIndent(line) {
     let i = 0;
-    while (i < line.length && line[i] === ' ') i++;
+    while (i < line.length && (line[i] === ' ' || line[i] === '\t')) i++;
     return i;
   }
 
@@ -273,7 +323,7 @@ function yamlToJS(yamlStr) {
           .filter(l => getIndent(l) > getIndent(line))
           .map(l => l.slice(getIndent(line)))
           .join('\n');
-        setAnchor(aname, track(yamlToJS(dummy)));
+        setAnchor(aname, track(yamlToJS(dummy, cfg, _depth + 1)));
       } else {
         setAnchor(aname, track(parseScalar(rest)));
       }
@@ -321,12 +371,12 @@ function yamlToJS(yamlStr) {
         const isMappingItem = colonIdxItem >= 0 && (itemContent[colonIdxItem + 1] === ' ' || itemLines.length > 0);
         if (isMappingItem) {
           const itemYaml = [itemContent, ...itemLines.map(l => l.slice(subIndent))].join('\n');
-          seq.push(track(yamlToJS(itemYaml)));
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1)));
         } else if (itemLines.length === 0) {
           seq.push(track(parseInlineValue(itemContent)));
         } else {
           const itemYaml = itemLines.map(l => l.slice(subIndent)).join('\n');
-          seq.push(track(yamlToJS(itemYaml)));
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1)));
         }
         i = j - 1;
       } else {
@@ -335,7 +385,7 @@ function yamlToJS(yamlStr) {
         const afterIndent = line.slice(indent);
         if (afterIndent.startsWith('"')) {
           const close = afterIndent.indexOf('"', 1);
-          if (close > 0) { colonIdx = indent + afterIndent.indexOf(':', close); key = afterIndent.slice(1, close); }
+          if (close > 0) { colonIdx = indent + afterIndent.indexOf(':', close); key = unescapeYaml(afterIndent.slice(1, close)); }
         } else if (afterIndent.startsWith("'")) {
           const close = afterIndent.indexOf("'", 1);
           if (close > 0) { colonIdx = indent + afterIndent.indexOf(':', close); key = afterIndent.slice(1, close); }
@@ -344,8 +394,9 @@ function yamlToJS(yamlStr) {
         if (colonIdx < 0) { i++; continue; }
         let valStr = line.slice(colonIdx + 1).trim();
 
-        const blockStyle = valStr.match(/\|[\-+]?$|>[\-+]?$/);
-        if (blockStyle && valStr.replace(/^!!\w+\s*/, '').trim() === blockStyle[0]) {
+        // Support explicit block scalar indent indicators (|1, |2, >1, >2, etc.)
+        const blockMatch = valStr.match(/^(\||>)([\-+]?\d*)$/);
+        if (blockMatch && valStr.replace(/^!!\w+\s*/, '').trim() === blockMatch[0]) {
           const blockLines = [];
           let j = i + 1;
           let contentIndent = null;
@@ -354,10 +405,10 @@ function yamlToJS(yamlStr) {
             if (nindent <= indent && ls[j].trim() !== '') break;
             if (ls[j].trim() === '' || ls[j].trim().startsWith('#')) { blockLines.push(''); j++; continue; }
             if (contentIndent === null) contentIndent = nindent;
-            blockLines.push(ls[j].slice(contentIndent || (indent + 2)));
+            blockLines.push(ls[j].slice(contentIndent));
             j++;
           }
-          const style = blockStyle[0];
+          const style = blockMatch[0];
           const chomp = style.endsWith('-') ? 'strip' : style.endsWith('+') ? 'keep' : 'clip';
           const baseStyle = style[0];
           let text;
@@ -367,8 +418,27 @@ function yamlToJS(yamlStr) {
             else if (chomp !== 'strip') text = text + '\n';
             text = chomp === 'strip' ? text.replace(/\n+$/, '') : text;
           } else {
-            text = blockLines.join(' ').replace(/  +/g, '\n');
-            text = chomp === 'strip' ? text.replace(/\n+$/, '') : chomp === 'keep' ? text.replace(/\n+$/, '') + '\n' : text.replace(/\n*$/, '\n');
+            // Folded block scalar — fold lines correctly
+            const folded = [];
+            let li = 0;
+            while (li < blockLines.length) {
+              if (blockLines[li] === '') {
+                folded.push('');
+                li++;
+              } else {
+                let accum = blockLines[li];
+                li++;
+                while (li < blockLines.length && blockLines[li] !== '') {
+                  accum += ' ' + blockLines[li];
+                  li++;
+                }
+                folded.push(accum);
+              }
+            }
+            text = folded.join('\n');
+            if (chomp === 'keep') text = text.replace(/\n*$/, '') + '\n';
+            else if (chomp === 'strip') text = text.replace(/\n+$/, '');
+            else text = text.replace(/\n*$/, '\n');
           }
           addKey(key);
           safeAssign(result, key, track(text));
@@ -452,6 +522,11 @@ function yamlToJS(yamlStr) {
   if (top.startsWith('[') || top.startsWith('{')) {
     const r = parseInlineFlow(top);
     result = r.value !== undefined ? track(r.value) : track(parseScalar(top));
+  } else if (top === '' || top === '---' || top === '...') {
+    result = null;
+  } else if (!top.includes(':') && !top.startsWith('- ') && !top.startsWith('&') && !top.startsWith('*')) {
+    // Standalone scalar
+    result = track(parseScalar(top));
   } else {
     result = parseBlock(0, 0);
   }
@@ -461,15 +536,19 @@ function yamlToJS(yamlStr) {
     if (Array.isArray(v)) return v.map(resolveMerges);
     if (v && typeof v === 'object' && !Array.isArray(v)) {
       const merged = {};
-      for (const k of Object.keys(v)) {
-        if (k === '<<') {
-          const src = v[k];
+      const sources = v['<<'];
+      if (sources !== undefined) {
+        const list = Array.isArray(sources) ? sources : [sources];
+        for (const src of list) {
           if (src && typeof src === 'object' && !Array.isArray(src)) {
             for (const sk of Object.keys(src)) {
-              if (!(sk in merged)) safeAssign(merged, sk, resolveMerges(src[sk]));
+              if (!(sk in merged) && sk !== '<<') safeAssign(merged, sk, resolveMerges(src[sk]));
             }
           }
-        } else {
+        }
+      }
+      for (const k of Object.keys(v)) {
+        if (k !== '<<') {
           safeAssign(merged, k, resolveMerges(v[k]));
         }
       }
@@ -478,23 +557,19 @@ function yamlToJS(yamlStr) {
     return v;
   }
   return resolveMerges(result);
-  } finally { _yamlRecDepth--; }
 }
 
 // ── YAML Multi-Document ─────────────────────────────────
 
-function parseAllYaml(yamlStr) {
-  if (yamlStr.length > cfg.maxInputBytes) throw new Error('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
+function parseAllYaml(yamlStr, cfg) {
+  if (Buffer.byteLength(yamlStr, 'utf8') > cfg.maxInputBytes)
+    throw new Error('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
   const docs = [];
-  const parts = yamlStr.split(/\n---[\t ]*(?:\n|$)/);
+  const parts = yamlStr.split(/\n(?:---|\.\.\.)[\t ]*(?:\n|$)/);
   for (const part of parts) {
     const trimmed = part.trim();
     if (trimmed === '' || trimmed === '...') continue;
-    if (trimmed.startsWith('---')) {
-      docs.push(yamlToJS(trimmed.slice(3)));
-    } else {
-      docs.push(yamlToJS(trimmed));
-    }
+    docs.push(yamlToJS(trimmed, cfg));
   }
   return docs;
 }
@@ -558,45 +633,36 @@ function yamlDump(value, opts = {}) {
 
 export class YamlSecurity {
   constructor(opts) {
-    const prev = { ...cfg };
-    if (opts) {
-      if (opts.maxAliasDepth !== undefined) cfg.maxAliasDepth = opts.maxAliasDepth;
-      if (opts.maxNodes !== undefined) cfg.maxNodes = opts.maxNodes;
-      if (opts.maxExpansion !== undefined) cfg.maxExpansion = opts.maxExpansion;
-    }
-    this._prev = prev;
+    this._overrides = opts ? { ...opts } : {};
   }
 
-  /**
-   * Parse YAML string → JavaScript value.
-   * Returns { ok: true, result: <value> } on success.
-   * Throws on error (duplicate keys, alias bombs, prototype pollution).
-   */
+  _getCfg() {
+    const cfg = { ..._baseCfg };
+    const ov = this._overrides;
+    if (ov.maxAliasDepth !== undefined) cfg.maxAliasDepth = ov.maxAliasDepth;
+    if (ov.maxNodes !== undefined) cfg.maxNodes = ov.maxNodes;
+    if (ov.maxExpansion !== undefined) cfg.maxExpansion = ov.maxExpansion;
+    return cfg;
+  }
+
   parse(yamlStr) {
     try {
-      const result = yamlToJS(yamlStr);
+      const result = yamlToJS(yamlStr, this._getCfg());
       return { ok: true, result };
     } catch (e) {
       return { ok: false, error: e.message };
     }
   }
 
-  /**
-   * Parse multi-document YAML (--- separated) → array of values.
-   */
   parseAll(yamlStr) {
     try {
-      const docs = parseAllYaml(yamlStr);
+      const docs = parseAllYaml(yamlStr, this._getCfg());
       return { ok: true, result: docs };
     } catch (e) {
       return { ok: false, error: e.message };
     }
   }
 
-  /**
-   * Convert JavaScript value → YAML string.
-   * Options: { indent, flowLevel }
-   */
   dump(value, opts) {
     try {
       const result = yamlDump(value, opts);
@@ -606,9 +672,6 @@ export class YamlSecurity {
     }
   }
 
-  /**
-   * Parse YAML → JSON string (pretty-printed).
-   */
   parseToJSON(yamlStr) {
     const r = this.parse(yamlStr);
     if (!r.ok) return r;

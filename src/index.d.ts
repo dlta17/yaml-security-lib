@@ -4,6 +4,15 @@ export interface YamlSecurityOptions {
   maxExpansion?: number;
 }
 
+export interface SetLimitsOptions {
+  maxAliasDepth?: number;
+  maxNodes?: number;
+  maxAlias?: number;
+  maxExpansion?: number;
+  maxInputMB?: number;
+  maxInputBytes?: number;
+}
+
 export interface YamlResult<T = any> {
   ok: boolean;
   result?: T;
@@ -17,9 +26,16 @@ export interface DumpOptions {
 
 export class YamlSecurity {
   constructor(opts?: YamlSecurityOptions);
-  parse(yamlStr: string): YamlResult<Record<string, any> | any[] | null>;
+
+  parse(yamlStr: string): YamlResult<Record<string, any> | any[] | null | string | number | boolean>;
+
   parseAll(yamlStr: string): YamlResult<any[]>;
+
   dump(value: any, opts?: DumpOptions): YamlResult<string>;
+
   parseToJSON(yamlStr: string): YamlResult<string>;
-  static setLimits(opts: Partial<YamlSecurityOptions & { maxAlias?: number; maxExpansion?: number; maxInputMB?: number }>): void;
+
+  static setLimits(opts?: Partial<SetLimitsOptions>): void;
 }
+
+export function setLimits(opts?: Partial<SetLimitsOptions>): void;
