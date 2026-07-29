@@ -1,6 +1,7 @@
 export interface YamlSecurityOptions {
   maxAliasDepth?: number;
   maxNodes?: number;
+  maxExpansion?: number;
 }
 
 export interface YamlResult<T = any> {
@@ -20,5 +21,5 @@ export class YamlSecurity {
   parseAll(yamlStr: string): YamlResult<any[]>;
   dump(value: any, opts?: DumpOptions): YamlResult<string>;
   parseToJSON(yamlStr: string): YamlResult<string>;
-  static setLimits(opts: Partial<YamlSecurityOptions & { maxAlias?: number; maxInputMB?: number }>): void;
+  static setLimits(opts: Partial<YamlSecurityOptions & { maxAlias?: number; maxExpansion?: number; maxInputMB?: number }>): void;
 }

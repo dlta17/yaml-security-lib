@@ -9,6 +9,7 @@ const DEFAULTS = {
   maxNodes: 10_000,
   maxAlias: 100,
   maxAliasDepth: 10,
+  maxExpansion: 100_000,
   maxInputBytes: 1_048_576,  // 1MB
 };
 
@@ -19,7 +20,20 @@ export function setLimits(opts) {
   if (opts.maxNodes !== undefined) cfg.maxNodes = opts.maxNodes;
   if (opts.maxAlias !== undefined) cfg.maxAlias = opts.maxAlias;
   if (opts.maxAliasDepth !== undefined) cfg.maxAliasDepth = opts.maxAliasDepth;
+  if (opts.maxExpansion !== undefined) cfg.maxExpansion = opts.maxExpansion;
   if (opts.maxInputMB !== undefined) cfg.maxInputBytes = Math.round(opts.maxInputMB * 1_048_576);
+}
+
+// ── Billion Laughs / Expansion Guard ────────────────────
+
+function deepSize(v, depth) {
+  if (depth > 50) return 0;
+  if (v === null || v === undefined) return 1;
+  if (typeof v !== 'object') return 1;
+  let n = 1;
+  if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) n += deepSize(v[i], depth + 1); }
+  else { const ks = Object.keys(v); for (let i = 0; i < ks.length; i++) n += deepSize(v[ks[i]], depth + 1); }
+  return n;
 }
 
 // ── Prototype Pollution Guard ────────────────────────────
@@ -47,9 +61,10 @@ function yamlToJS(yamlStr) {
   let produced = 0;
   let aliasHits = 0;
 
-  function track(node) {
-    if (++produced > cfg.maxNodes)
-      throw new Error('YAML: alias expansion limit exceeded (possible bomb)');
+  function track(node, weight) {
+    produced += weight || 1;
+    if (produced > cfg.maxNodes)
+      throw err('expansion limit exceeded (possible bomb)');
     return node;
   }
 
@@ -99,13 +114,13 @@ function yamlToJS(yamlStr) {
       let i = 1;
       while (i < s.length) {
         const c = s[i];
-        if (c === ']') return { value: track(items), endPos: i + 1 };
+        if (c === ']') { const exp = deepSize(items, 0); return { value: track(items, exp), endPos: i + 1 }; }
         if (c === ',' || c === ' ') { i++; continue; }
         const r = parseInlineFlow(s.slice(i));
         items.push(track(r.value));
         i += r.endPos;
       }
-      return { value: track(items), endPos: s.length };
+      const expA = deepSize(items, 0); return { value: track(items, expA), endPos: s.length };
     }
     if (s.startsWith('{')) {
       const obj = {};
@@ -113,12 +128,12 @@ function yamlToJS(yamlStr) {
       let i = 1;
       while (i < s.length) {
         const c = s[i];
-        if (c === '}') return { value: track(obj), endPos: i + 1 };
+        if (c === '}') { const exp = deepSize(obj, 0); return { value: track(obj, exp), endPos: i + 1 }; }
         if (c === ',' || c === ' ') { i++; continue; }
         let key;
         if (s[i] === '"' || s[i] === "'") {
           const close = s.indexOf(s[i], i + 1);
-          if (close < 0) return { value: track(obj), endPos: s.length };
+          if (close < 0) { const exp = deepSize(obj, 0); return { value: track(obj, exp), endPos: s.length }; }
           key = s.slice(i + 1, close);
           i = close + 1;
         } else {
@@ -150,7 +165,7 @@ function yamlToJS(yamlStr) {
           i += r.endPos;
         }
       }
-      return { value: track(obj), endPos: s.length };
+      const expO = deepSize(obj, 0); return { value: track(obj, expO), endPos: s.length };
     }
     if (s.startsWith('&')) {
       const nameEnd = s.slice(1).search(/[ \t\[{"'*,]/);
@@ -409,7 +424,7 @@ function yamlToJS(yamlStr) {
       i++;
     }
 
-    if (inSeq) return track(seq);
+    if (inSeq) { const expS = deepSize(seq, 0); return track(seq, expS); }
     return track(result);
   }
 
@@ -528,6 +543,7 @@ export class YamlSecurity {
     if (opts) {
       if (opts.maxAliasDepth !== undefined) cfg.maxAliasDepth = opts.maxAliasDepth;
       if (opts.maxNodes !== undefined) cfg.maxNodes = opts.maxNodes;
+      if (opts.maxExpansion !== undefined) cfg.maxExpansion = opts.maxExpansion;
     }
     this._prev = prev;
   }

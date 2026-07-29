@@ -99,6 +99,14 @@ assert(json.result.includes('"a"'), 'parseToJSON has key');
 const strict = new YamlSecurity({ maxAliasDepth: 2 });
 assert(!strict.parse('&w hello\n&x *w\n&y *x\n&z *y\nb: *z').ok, 'constructor opts maxAliasDepth=2');
 
+// ── Billion Laughs protection ──
+const billionLaughs = '&a lol\nb: &b [*a, *a]\nc: &c [*b, *b]\nd: &d [*c, *c]\ne: &e [*d, *d]\nf: &f [*e, *e]\ng: &g [*f, *f]\nh: &h [*g, *g]\ni: &i [*h, *h]\nj: &j [*i, *i]\nk: &k [*j, *j]\nl: &l [*k, *k]\nm: &m [*l, *l]\nn: &n [*m, *m]\no: &o [*n, *n]\np: *o';
+assert(!p.parse(billionLaughs).ok, 'Billion Laughs (16 levels) blocked');
+const small = new YamlSecurity({ maxExpansion: 1000 });
+assert(!small.parse(billionLaughs).ok, 'Billion Laughs blocked with maxExpansion=1000');
+const normal = new YamlSecurity({ maxExpansion: 200_000 });
+assert(!normal.parse(billionLaughs).ok, 'Billion Laughs blocked even with maxExpansion=200K');
+
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
