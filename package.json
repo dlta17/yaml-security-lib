@@ -1,18 +1,27 @@
 {
   "name": "yaml-security-lib",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Secure YAML parser — duplicate key detection, alias depth limiting, prototype pollution prevention",
   "main": "src/index.js",
   "types": "src/index.d.ts",
   "type": "module",
-  "files": ["src/", "LICENSE", "LICENSE.COMMERCIAL"],
+  "files": [
+    "src/",
+    "LICENSE",
+    "LICENSE.COMMERCIAL"
+  ],
   "scripts": {
     "test": "node test/index.js",
     "example": "node examples/basic.js"
   },
   "keywords": [
-    "yaml", "security", "duplicate-keys", "alias-depth",
-    "prototype-pollution", "yaml-parse", "safe-yaml"
+    "yaml",
+    "security",
+    "duplicate-keys",
+    "alias-depth",
+    "prototype-pollution",
+    "yaml-parse",
+    "safe-yaml"
   ],
   "license": "AGPL-3.0-only",
   "author": "Nedal Ibrahim <salamanedal@gmail.com>",
