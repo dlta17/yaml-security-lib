@@ -15,7 +15,7 @@ const DEFAULTS = {
 
 let cfg = { ...DEFAULTS };
 
-export function setLimits(opts) {
+function setLimits(opts) {
   if (!opts || Object.keys(opts).length === 0) { cfg = { ...DEFAULTS }; return; }
   if (opts.maxNodes !== undefined) cfg.maxNodes = opts.maxNodes;
   if (opts.maxAlias !== undefined) cfg.maxAlias = opts.maxAlias;
@@ -556,7 +556,7 @@ function yamlDump(value, opts = {}) {
 
 // ── Public API ──────────────────────────────────────────
 
-export class YamlSecurity {
+class YamlSecurity {
   constructor(opts) {
     const prev = { ...cfg };
     if (opts) {
@@ -618,3 +618,5 @@ export class YamlSecurity {
 
 // Static method
 YamlSecurity.setLimits = setLimits;
+
+module.exports={setLimits,YamlSecurity};

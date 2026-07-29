@@ -8,14 +8,25 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [18, 20, 22]
-
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [16, 18, 20, 22]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-      - run: node test/index.js
+          node-version: ${{ matrix.node }}
+      - run: node --version
+      - name: Test ESM import
+        run: node --input-type=module -e "import {YamlSecurity} from './src/index.js'; process.exit(0)"
+      - name: Test unit
+        run: node test/index.js
+      - name: Test fuzz
+        run: node test/fuzz.js
+      - name: Test CJS
+        shell: bash
+        run: |
+          npm run build:cjs
+          node -e "const {YamlSecurity}=require('./index.cjs');const p=new YamlSecurity();const r=p.parse('test: ok');process.exit(r.ok?0:1)"

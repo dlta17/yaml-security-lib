@@ -76,6 +76,12 @@ assertEqual(p.parse('x: >\n  hello\n  world').result, { x: 'hello world\n' }, 'f
 // ── Quoted keys ──
 assertEqual(p.parse('"a:b": 1').result, { 'a:b': 1 }, 'quoted key with colon');
 
+// ── YAML Directives ──
+assertEqual(p.parse('%YAML 1.2\n---\nhello: world').result, { hello: 'world' }, '%YAML directive');
+assertEqual(p.parse('---\nkey: value').result, { key: 'value' }, '--- doc start');
+assertEqual(p.parse('x: 1\n...\ny: 2').result, { x: 1 }, '... doc end stops parsing');
+assertEqual(p.parse('# comment\n%YAML 1.2\n---\nval: 42').result, { val: 42 }, 'directives with comments');
+
 // ── Multi-document ──
 const docs = p.parseAll('a: 1\n---\nb: 2\n---\nc: 3');
 assertEqual(docs.result, [{ a: 1 }, { b: 2 }, { c: 3 }], 'multi-document');

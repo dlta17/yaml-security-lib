@@ -2,17 +2,26 @@
   "name": "yaml-security-lib",
   "version": "1.0.1",
   "description": "Secure YAML parser — duplicate key detection, alias depth limiting, prototype pollution prevention",
-  "main": "src/index.js",
+  "main": "index.cjs",
   "types": "src/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "import": "./src/index.js",
+      "require": "./index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "src/",
+    "index.cjs",
     "LICENSE",
     "LICENSE.COMMERCIAL"
   ],
   "scripts": {
-    "test": "node test/index.js",
-    "example": "node examples/basic.js"
+    "test": "node test/index.js && node test/fuzz.js",
+    "example": "node examples/basic.js",
+    "build:cjs": "node -e \"const f=require('fs'),s=f.readFileSync('src/index.js','utf8').replace(/^export function /gm,'function ').replace(/^export class /gm,'class ')+'\\nmodule.exports={setLimits,YamlSecurity};';f.writeFileSync('src/index.cjs',s);console.log('src/index.cjs generated ('+s.split('\\\\n').length+' lines)');\""
   },
   "keywords": [
     "yaml",
