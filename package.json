@@ -13,8 +13,8 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "src/",
-    "dist/",
+    "src/index.js",
+    "src/index.d.ts",
     "index.cjs",
     "LICENSE",
     "LICENSE.COMMERCIAL"
@@ -23,9 +23,7 @@
   "scripts": {
     "test": "node test/index.js && node test/fuzz.js",
     "example": "node examples/basic.js",
-    "build:cjs": "node -e \"const f=require('fs'),s=f.readFileSync('src/index.js','utf8').replace(/^export (function|class) /gm,(m,t)=>t+' ')+'\\nmodule.exports={setLimits,YamlSecurity,YAMLException,default:YamlSecurity};';f.writeFileSync('src/index.cjs',s);console.log('src/index.cjs generated ('+s.split('\\\\n').length+' lines)');\"",
-    "build:browser": "node -e \"const{execSync:e}=require('child_process'),{mkdirSync:m}=require('fs');try{e('npx esbuild --version',{stdio:'pipe'})}catch{e('npm install --no-save esbuild',{stdio:'inherit'})};m('dist',{recursive:true});e('npx esbuild src/index.js --bundle --format=esm --outfile=dist/yaml-security.mjs --minify',{stdio:'inherit'});e('npx esbuild src/index.js --bundle --format=iife --global-name=YamlSecurity --outfile=dist/yaml-security.min.js --minify',{stdio:'inherit'});console.log('Built dist/');\"",
-    "prepare": "npm run build:cjs"
+    "build:browser": "node -e \"const{execSync:e}=require('child_process'),{mkdirSync:m}=require('fs');try{e('npx esbuild --version',{stdio:'pipe'})}catch{e('npm install --no-save esbuild',{stdio:'inherit'})};m('dist',{recursive:true});e('npx esbuild src/index.js --bundle --format=esm --outfile=dist/yaml-security.mjs --minify',{stdio:'inherit'});e('npx esbuild src/index.js --bundle --format=iife --global-name=YamlSecurity --outfile=dist/yaml-security.min.js --minify',{stdio:'inherit'});console.log('Built dist/');\""
   },
   "keywords": [
     "yaml",
