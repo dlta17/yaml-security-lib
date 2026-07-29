@@ -38,11 +38,20 @@ function deepSize(v, depth) {
   return n;
 }
 
+// ── Custom Error ─────────────────────────────────────────
+
+export class YAMLException extends Error {
+  constructor(msg) {
+    super(msg);
+    this.name = 'YAMLException';
+  }
+}
+
 // ── Prototype Pollution Guard ────────────────────────────
 
 function safeAssign(obj, key, value) {
   if (key === '__proto__' || key === 'constructor' || key === 'prototype')
-    throw new Error('Security: cannot set key "' + key + '" — prototype pollution blocked');
+    throw new YAMLException('Security: cannot set key "' + key + '" — prototype pollution blocked');
   obj[key] = value;
 }
 
@@ -71,9 +80,9 @@ function unescapeYaml(s) {
 
 function yamlToJS(yamlStr, cfg, _depth) {
   if (_depth === undefined) _depth = 0;
-  if (_depth > 50) throw new Error('YAML: recursion too deep (>50) — possible anchor bomb');
+  if (_depth > 50) throw new YAMLException('YAML: recursion too deep (>50) — possible anchor bomb');
   if (Buffer.byteLength(yamlStr, 'utf8') > cfg.maxInputBytes) {
-    throw new Error('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
+    throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
   }
 
   const lines = yamlStr.split('\n');
@@ -112,13 +121,13 @@ function yamlToJS(yamlStr, cfg, _depth) {
   function setAnchor(aname, value, sourceAnchor) {
     const depth = sourceAnchor ? (anchorDepths[sourceAnchor] || 0) + 1 : 0;
     if (depth > cfg.maxAliasDepth)
-      throw new Error('YAML: alias depth exceeds limit (' + cfg.maxAliasDepth + '), possible anchor bomb');
+      throw new YAMLException('YAML: alias depth exceeds limit (' + cfg.maxAliasDepth + '), possible anchor bomb');
     anchors[aname] = value;
     anchorDepths[aname] = depth;
   }
 
   function resolveAlias(aname) {
-    if (++aliasHits > cfg.maxAlias) throw new Error('YAML: alias expansion limit exceeded (bomb)');
+    if (++aliasHits > cfg.maxAlias) throw new YAMLException('YAML: alias expansion limit exceeded (bomb)');
     const val = anchors[aname];
     if (val === undefined) return aname;
     return val;
@@ -200,7 +209,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
           key = s.slice(i, j).trim();
           i = j;
         }
-        if (seenKeys.has(key)) throw new Error('YAML: Duplicate key: "' + key + '"');
+        if (seenKeys.has(key)) throw new YAMLException('YAML: Duplicate key: "' + key + '"');
         seenKeys.add(key);
         while (i < s.length && (s[i] === ' ' || s[i] === ':')) i++;
         const r = parseInlineFlow(s.slice(i));
@@ -297,7 +306,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
 
   function err(msg) {
     const loc = currentLine >= 0 ? ' at line ' + (currentLine + 1) : '';
-    return new Error('YAML' + loc + ': ' + msg);
+    return new YAMLException('YAML' + loc + ': ' + msg);
   }
 
   function getIndent(line) {
@@ -563,7 +572,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
 
 function parseAllYaml(yamlStr, cfg) {
   if (Buffer.byteLength(yamlStr, 'utf8') > cfg.maxInputBytes)
-    throw new Error('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
+    throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
   const docs = [];
   const parts = yamlStr.split(/\n(?:---|\.\.\.)[\t ]*(?:\n|$)/);
   for (const part of parts) {
@@ -596,7 +605,7 @@ function yamlDump(value, opts = {}) {
   }
   function _dump(v, depth) {
     if (typeof v === 'object' && v !== null) {
-      if (visited.has(v)) throw new Error('YAML dump: circular reference detected');
+      if (visited.has(v)) throw new YAMLException('YAML dump: circular reference detected');
       visited.add(v);
     }
     const sp = depth > 0 ? ' '.repeat(indent * depth) : '';

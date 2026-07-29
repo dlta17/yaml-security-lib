@@ -1,3 +1,7 @@
+export class YAMLException extends Error {
+  constructor(msg: string);
+}
+
 export interface YamlSecurityOptions {
   maxAliasDepth?: number;
   maxNodes?: number;
