@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.1 (2026-07-31)
+
+### Documentation
+- README badges, comparison table, YAML Test Suite score, setLimits/parseToJSON examples
+- CHANGELOG.md added
+
 ## 1.7.0 (2026-07-31)
 
 ### Bug Fixes
