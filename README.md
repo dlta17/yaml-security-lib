@@ -1,6 +1,6 @@
 # YAML Security Lib
 
-[![npm version](https://badge.fury.io/js/yaml-security-lib.svg)](https://badge.fury.io/js/yaml-security-lib)
+[![npm version](https://img.shields.io/npm/v/yaml-security-lib)](https://www.npmjs.com/package/yaml-security-lib)
 [![CI](https://github.com/dlta17/yaml-security-lib/actions/workflows/ci.yml/badge.svg)](https://github.com/dlta17/yaml-security-lib/actions)
 [![Downloads](https://img.shields.io/npm/dw/yaml-security-lib)](https://www.npmjs.com/package/yaml-security-lib)
 [![Bundle Size](https://img.shields.io/bundlephobia/min/yaml-security-lib)](https://bundlephobia.com/package/yaml-security-lib)
