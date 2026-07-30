@@ -491,7 +491,16 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
         fullTag = expandTag(rawTag);
       }
       const type = _schema._explicit[fullTag];
-      if (type) val = type.construct(String(val));
+      if (!type) {
+        if (rawTag.startsWith('!!')) {
+          // Unknown !! tag: use resolved val (backward compat)
+        } else {
+          // Unknown ! tag: re-parse as plain scalar (backward compat)
+          return { value: track(parseScalar(s)), endPos: s.length };
+        }
+      } else {
+        val = type.construct(String(val));
+      }
       return { value: track(val), endPos: tagPrefix[0].length + r.endPos };
     }
     if (s.startsWith('"')) {
