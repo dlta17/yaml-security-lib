@@ -12,6 +12,8 @@ const DEFAULTS = {
   maxExpansion: 100_000,
   maxInputMB: 1,
   maxInputBytes: 1_048_576,  // 1MB
+  maxStringLength: 0,         // 0 = unlimited
+  maxKeys: 0,                 // 0 = unlimited
 };
 
 let _baseCfg = { ...DEFAULTS };
@@ -19,7 +21,7 @@ let _baseCfg = { ...DEFAULTS };
 /**
  * Globally adjust parser limits for all instances.
  * Call with no arguments (or `{}`) to reset to defaults.
- * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number}} [opts]
+ * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number}} [opts]
  */
 export function setLimits(opts) {
   if (!opts || Object.keys(opts).length === 0) { _baseCfg = { ...DEFAULTS }; return; }
@@ -28,6 +30,14 @@ export function setLimits(opts) {
       const v = opts[key];
       if (typeof v !== 'number' || !Number.isFinite(v) || v < 1 || !Number.isInteger(v))
         throw new YAMLException('setLimits: ' + key + ' must be a positive integer');
+      _baseCfg[key] = v;
+    }
+  }
+  for (const key of ['maxStringLength', 'maxKeys']) {
+    if (opts[key] !== undefined) {
+      const v = opts[key];
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || !Number.isInteger(v))
+        throw new YAMLException('setLimits: ' + key + ' must be a non-negative integer');
       _baseCfg[key] = v;
     }
   }
@@ -287,10 +297,11 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     aliasHits: 0,
     anchors: {},
     anchorDepths: {},
+    anchorSources: {},
     mergeOverrideKeys: new Set(),
     nodeWeights: new WeakMap(),
   };
-  const { anchors, anchorDepths, mergeOverrideKeys, nodeWeights } = state;
+  const { anchors, anchorDepths, anchorSources, mergeOverrideKeys, nodeWeights } = state;
 
   const lines = yamlStr.split('\n');
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
@@ -301,13 +312,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   while (docStartIdx < lines.length) {
     const raw = lines[docStartIdx];
     const trimmed = raw.trim();
-    if (trimmed === '---' || trimmed === '...') { docStartIdx++; continue; }
-    if (trimmed.startsWith('%YAML')) { docStartIdx++; continue; }
+    if (trimmed === '---' || trimmed.startsWith('--- ') || trimmed === '...') { docStartIdx++; continue; }
     if (trimmed.startsWith('%TAG')) {
       const parts = trimmed.split(/\s+/);
       if (parts.length >= 3) tags[parts[1]] = parts[2];
       docStartIdx++; continue;
     }
+    if (trimmed.startsWith('%')) { docStartIdx++; continue; }
     if (trimmed === '' || trimmed.startsWith('#')) { docStartIdx++; continue; }
     break;
   }
@@ -324,6 +335,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   }
 
   function track(node, weight) {
+    if (typeof node === 'string' && cfg.maxStringLength > 0 && node.length > cfg.maxStringLength)
+      throw err('string length exceeds limit (' + cfg.maxStringLength + ')');
     if (typeof node !== 'object' || node === null) {
       state.produced++;
       if (state.produced > cfg.maxNodes)
@@ -345,11 +358,20 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   }
 
   function setAnchor(aname, value, sourceAnchor) {
+    if (sourceAnchor) {
+      let cur = sourceAnchor;
+      while (cur) {
+        if (cur === aname)
+          throw new YAMLException('YAML: circular alias detected — "' + aname + '"');
+        cur = anchorSources[cur];
+      }
+    }
     const depth = sourceAnchor ? (anchorDepths[sourceAnchor] || 0) + 1 : 0;
     if (depth > cfg.maxAliasDepth)
       throw new YAMLException('YAML: alias depth exceeds limit (' + cfg.maxAliasDepth + '), possible anchor bomb');
     anchors[aname] = value;
     anchorDepths[aname] = depth;
+    if (sourceAnchor) anchorSources[aname] = sourceAnchor;
   }
 
   function resolveAlias(aname) {
@@ -371,6 +393,23 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
 
   let currentLine = -1;
   let currentColumn = -1;
+
+  // Find the first `:` that acts as a key-value separator:
+  // followed by space, tab, EOL, `#`, `}`, `]` — but not inside a quoted string
+  function findKeySep(str, start) {
+    let inSingle = false, inDouble = false;
+    for (let i = start || 0; i < str.length; i++) {
+      const ch = str[i];
+      if (ch === '\\' && inDouble) { i++; continue; }
+      if (ch === '"' && !inSingle) inDouble = !inDouble;
+      else if (ch === "'" && !inDouble) inSingle = !inSingle;
+      else if (ch === ':' && !inSingle && !inDouble) {
+        if (i + 1 >= str.length || str[i + 1] === ' ' || str[i + 1] === '\t' || str[i + 1] === '#' || str[i + 1] === '}' || str[i + 1] === ']')
+          return i;
+      }
+    }
+    return -1;
+  }
 
   function err(msg, col) {
     const loc = currentLine >= 0 ? ' at line ' + (currentLine + 1) : '';
@@ -499,6 +538,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           key = s.slice(i, j).trim();
           i = j;
         }
+        if (cfg.maxKeys > 0 && seenKeys.size >= cfg.maxKeys)
+          throw new YAMLException('YAML: inline mapping keys limit exceeded (' + cfg.maxKeys + ')');
         if (seenKeys.has(key)) throw new YAMLException('YAML: Duplicate key: "' + key + '"');
         seenKeys.add(key);
         while (i < s.length && (s[i] === ' ' || s[i] === ':')) i++;
@@ -648,6 +689,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     const result = {};
     const seenKeys = new Set();
     function addKey(key) {
+      if (cfg.maxKeys > 0 && seenKeys.size >= cfg.maxKeys)
+        throw err('mapping keys limit exceeded (' + cfg.maxKeys + ')');
       if (seenKeys.has(key)) throw err('Duplicate key: "' + key + '"');
       seenKeys.add(key);
     }
@@ -680,7 +723,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           j++;
         }
 
-        const colonIdxItem = itemContent.indexOf(':');
+        const colonIdxItem = findKeySep(itemContent);
         const isMappingItem = colonIdxItem >= 0 && (itemContent[colonIdxItem + 1] === ' ' || itemLines.length > 0);
         if (isMappingItem) {
           const itemYaml = [itemContent, ...itemLines.map(l => l.slice(subIndent))].join('\n');
@@ -715,10 +758,31 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           }
           if (close > 0) { colonIdx = indent + afterIndent.indexOf(':', close); key = afterIndent.slice(1, close).replace(/''/g, "'"); }
         }
-        if (colonIdx < 0) { colonIdx = line.indexOf(':'); key = line.slice(indent, colonIdx).trim(); }
-        if (colonIdx < 0) { i++; continue; }
-        currentColumn = colonIdx + 1;
-        let valStr = line.slice(colonIdx + 1).trim();
+        if (colonIdx < 0) { colonIdx = findKeySep(line, indent); if (colonIdx >= 0) key = line.slice(indent, colonIdx).trim(); }
+        let valStr;
+        // Explicit key syntax: ? key \n : value
+        if (colonIdx < 0 && afterIndent.startsWith('? ')) {
+          key = afterIndent.slice(2);
+          const nextLine = i + 1 < ls.length ? ls[i + 1].trim() : '';
+          if (nextLine.startsWith(': ')) {
+            valStr = nextLine.slice(2).trim();
+            i++; // consume the : line
+          } else if (nextLine === ':') {
+            valStr = '';
+            i++; // consume the : line
+          } else {
+            // Key with no value (e.g. in !!set)
+            addKey(key);
+            safeAssign(result, key, track(null));
+            i++;
+            continue;
+          }
+        } else if (colonIdx < 0) {
+          i++; continue;
+        } else {
+          valStr = line.slice(colonIdx + 1).trim();
+        }
+        currentColumn = (typeof colonIdx === 'number' && colonIdx >= 0 ? colonIdx : 0) + 1;
 
         // Track merge keys to catch override attempts
         if (key === '<<') {
@@ -852,15 +916,16 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     return track(result);
   }
 
+  const topContent = contentLines.join('\n').trim();
   const top = yamlStr.trim();
   let result;
-  if (top.startsWith('[') || top.startsWith('{')) {
-    const r = parseInlineFlow(top);
-    result = r.value !== undefined ? track(r.value) : track(parseScalar(top));
-  } else if (top === '' || top === '---' || top === '...') {
+  if (topContent.startsWith('[') || topContent.startsWith('{')) {
+    const r = parseInlineFlow(topContent);
+    result = r.value !== undefined ? track(r.value) : track(parseScalar(topContent));
+  } else if (topContent === '' || topContent === '---' || topContent === '...') {
     result = null;
-  } else if (!top.includes(':') && !top.startsWith('- ') && !top.startsWith('&') && !top.startsWith('*')) {
-    result = track(parseScalar(top));
+  } else if (!topContent.includes(':') && !topContent.startsWith('- ') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
+    result = track(parseScalar(topContent));
   } else {
     result = parseBlock(0, 0);
   }
@@ -1047,7 +1112,7 @@ export function dump(value, opts) {
  */
 export class YamlSecurity {
   /**
-   * @param {{maxAliasDepth?: number, maxNodes?: number, maxExpansion?: number}} [opts]
+   * @param {{maxAliasDepth?: number, maxNodes?: number, maxExpansion?: number, maxStringLength?: number, maxKeys?: number}} [opts]
    */
   constructor(opts) {
     this._overrides = opts ? { ...opts } : {};
@@ -1071,6 +1136,8 @@ export class YamlSecurity {
     if (ov.maxAliasDepth !== undefined) cfg.maxAliasDepth = ov.maxAliasDepth;
     if (ov.maxNodes !== undefined) cfg.maxNodes = ov.maxNodes;
     if (ov.maxExpansion !== undefined) cfg.maxExpansion = ov.maxExpansion;
+    if (ov.maxStringLength !== undefined) cfg.maxStringLength = ov.maxStringLength;
+    if (ov.maxKeys !== undefined) cfg.maxKeys = ov.maxKeys;
     return cfg;
   }
 

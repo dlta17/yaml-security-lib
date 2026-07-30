@@ -342,6 +342,28 @@ assert(!globalCount.parse('a: 1\nb: 2\nc: 3\nd: 4\nsub:\n  x: 5\n  y: 6').ok,
   'produced counter shared globally across recursive yamlToJS calls');
 YamlSecurity.setLimits();
 
+// ── Circular alias detection ──
+assert(!p.parse('&a *a\nb: 1').ok, 'circular alias self-reference &a *a blocked');
+assert(!p.parse('&a *b\n&b *a\nc: 1').ok, 'circular alias indirect cycle &a->&b->&a blocked');
+// Non-circular aliases still work
+assertEqual(p.parse('&a hello\nb: *a').result, { b: 'hello' }, 'non-circular alias still works');
+
+// ── maxStringLength ──
+YamlSecurity.setLimits({ maxStringLength: 10 });
+const strLimit = new YamlSecurity();
+assert(!strLimit.parse('x: "aaaaaaaaaaa"').ok, 'maxStringLength=10 blocks 11-char string');
+assert(strLimit.parse('x: "aaaaaaaaaa"').ok, 'maxStringLength=10 allows 10-char string');
+YamlSecurity.setLimits();
+
+// ── maxKeys ──
+YamlSecurity.setLimits({ maxKeys: 3 });
+const keyLimit = new YamlSecurity();
+assert(!keyLimit.parse('a: 1\nb: 2\nc: 3\nd: 4').ok, 'maxKeys=3 blocks 4-key mapping');
+assert(keyLimit.parse('a: 1\nb: 2\nc: 3').ok, 'maxKeys=3 allows 3-key mapping');
+// Inline flow
+assert(!keyLimit.parse('{a: 1, b: 2, c: 3, d: 4}').ok, 'maxKeys=3 blocks 4-key inline mapping');
+YamlSecurity.setLimits();
+
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
