@@ -1,4 +1,4 @@
-import { YamlSecurity, parse, parseAll, dump, YAMLException } from '../src/index.js';
+import { YamlSecurity, parse, parseAll, dump, YAMLException, YamlType, Schema } from '../src/index.js';
 
 let passed = 0;
 let failed = 0;
@@ -199,6 +199,75 @@ assert(sorted.indexOf('a:') < sorted.indexOf('b:'), 'dump sortKeys');
 // ── Dumper: forceQuotes ──
 const quoted = dump({ key: 'value' }, { forceQuotes: true });
 assert(quoted.includes("'key'") || quoted.includes('"key"'), 'dump forceQuotes');
+
+// ── Schema System ──
+
+// Explicit tags via Schema
+assertEqual(p.parse('x: !!str 42').result, { x: '42' }, '!!str via schema');
+assertEqual(p.parse('x: !!int 3.14').result, { x: 3 }, '!!int truncates via schema');
+assertEqual(p.parse('x: !!null hello').result, { x: null }, '!!null via schema');
+assertEqual(p.parse('x: !!bool true').result, { x: true }, '!!bool via schema');
+assertEqual(p.parse('x: !!float 3').result, { x: 3 }, '!!float via schema');
+assertEqual(p.parse('x: !!binary d29ybGQ=').result, { x: Uint8Array.from([119, 111, 114, 108, 100]) }, '!!binary via schema');
+
+// Implicit resolution via Schema
+assertEqual(p.parse('42').result, 42, 'standalone int via schema');
+assertEqual(p.parse('true').result, true, 'standalone bool via schema');
+assertEqual(p.parse('null').result, null, 'standalone null via schema');
+assertEqual(p.parse('hello').result, 'hello', 'standalone string via schema');
+
+// Custom type via standalone parse with { types }
+const upperType = new YamlType('!upper', {
+  kind: 'scalar',
+  construct: (v) => String(v).toUpperCase(),
+  resolve: () => false,
+});
+assertEqual(parse('x: !upper hello', { types: [upperType] }), { x: 'HELLO' }, 'custom type via opts.types');
+
+// Custom type with implicit resolution (custom schema without default int)
+// Order matters: add evenType before str so it gets checked first
+const evenSchema = new Schema()
+  .addType(new YamlType('!even', {
+    kind: 'scalar',
+    construct: (v) => ({ value: parseInt(v, 10), even: parseInt(v, 10) % 2 === 0 }),
+    resolve: (v) => /^\d+$/.test(v) && parseInt(v, 10) % 2 === 0,
+  }))
+  .addType(new YamlType('tag:yaml.org,2002:str', { kind: 'scalar', construct: (v) => String(v), resolve: () => true }));
+assertEqual(parse('4', { schema: evenSchema }), { value: 4, even: true }, 'custom implicit type matches even');
+assertEqual(parse('5', { schema: evenSchema }), '5', 'custom implicit type skipped for odd (falls through to str)');
+
+// Custom Schema instance
+const customSchema = new Schema()
+  .addType(new YamlType('tag:yaml.org,2002:str', {
+    kind: 'scalar',
+    construct: (v) => String(v),
+    resolve: () => true,
+  }))
+  .addType(new YamlType('!reverse', {
+    kind: 'scalar',
+    construct: (v) => String(v).split('').reverse().join(''),
+    resolve: () => false,
+  }));
+
+assertEqual(parse('x: !reverse hello', { schema: customSchema }), { x: 'olleh' }, 'custom schema via opts.schema');
+
+// setSchema on YamlSecurity instance
+const sec = new YamlSecurity();
+sec.setSchema(customSchema);
+assertEqual(sec.parse('x: !reverse world').result, { x: 'dlrow' }, 'setSchema on instance');
+assertEqual(sec.parse('hello').result, 'hello', 'setSchema still resolves strings via str type');
+
+// Schema tagFor
+const s = new Schema().addType(new YamlType('!custom', { kind: 'scalar', construct: (v) => v, resolve: () => false }));
+assertEqual(s.tagFor(42), 'tag:yaml.org,2002:int', 'tagFor int');
+assertEqual(s.tagFor('hello'), 'tag:yaml.org,2002:str', 'tagFor string');
+assertEqual(s.tagFor(true), 'tag:yaml.org,2002:bool', 'tagFor bool');
+assertEqual(s.tagFor(null), 'tag:yaml.org,2002:null', 'tagFor null');
+
+// Schema addType returns this for chaining
+const dummyType = new YamlType('!dummy', { kind: 'scalar', construct: (v) => v, resolve: () => false });
+const chained = new Schema().addType(upperType).addType(dummyType);
+assert(chained instanceof Schema, 'chained addType returns Schema');
 
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed`);

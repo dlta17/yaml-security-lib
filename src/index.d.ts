@@ -33,8 +33,38 @@ export interface DumpOptions {
   quotingType?: 'single' | 'double';
 }
 
+export interface ParseOptions {
+  schema?: Schema;
+  types?: YamlType[];
+}
+
+// ── Schema System ──
+
+export class YamlType {
+  tag: string;
+  kind: 'scalar' | 'mapping' | 'sequence';
+  construct: (val: any) => any;
+  resolve: (val: string) => boolean;
+  instance?: any;
+
+  constructor(tag: string, opts?: {
+    kind?: 'scalar' | 'mapping' | 'sequence';
+    construct?: (val: any) => any;
+    resolve?: (val: string) => boolean;
+    instance?: any;
+  });
+}
+
+export class Schema {
+  constructor();
+  addType(type: YamlType): Schema;
+  tagFor(val: any): string;
+}
+
 export class YamlSecurity {
   constructor(opts?: YamlSecurityOptions);
+
+  setSchema(schema: Schema): void;
 
   parse(yamlStr: string): YamlResult<Record<string, any> | any[] | null | string | number | boolean>;
 
@@ -49,8 +79,8 @@ export class YamlSecurity {
 
 export function setLimits(opts?: Partial<SetLimitsOptions>): void;
 
-export function parse(yamlStr: string): any;
+export function parse(yamlStr: string, opts?: ParseOptions): any;
 
-export function parseAll(yamlStr: string): any[];
+export function parseAll(yamlStr: string, opts?: ParseOptions): any[];
 
 export function dump(value: any, opts?: DumpOptions): string;

@@ -1,6 +1,6 @@
 {
   "name": "yaml-security-lib",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Secure YAML parser — duplicate key detection, alias depth limiting, prototype pollution prevention",
   "main": "index.cjs",
   "types": "src/index.d.ts",

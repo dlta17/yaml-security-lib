@@ -101,10 +101,114 @@ function parseTimestamp(s) {
   return isNaN(date.getTime()) ? null : date;
 }
 
+// ── Schema System ────────────────────────────────────────
+
+export class YamlType {
+  constructor(tag, opts = {}) {
+    this.tag = tag;
+    this.kind = opts.kind || 'scalar';
+    this.construct = opts.construct || ((v) => v);
+    this.resolve = opts.resolve || (() => true);
+    this.instance = opts.instance || undefined;
+  }
+}
+
+export class Schema {
+  constructor() {
+    this._types = [];
+    this._explicit = {};
+    this._implicit = [];
+  }
+
+  addType(type) {
+    this._types.push(type);
+    this._explicit[type.tag] = type;
+    if (type.kind === 'scalar' && type.instance === undefined) {
+      this._implicit.push(type);
+    }
+    return this;
+  }
+
+  tagFor(val) {
+    if (val === null || val === undefined) return 'tag:yaml.org,2002:null';
+    if (typeof val === 'boolean') return 'tag:yaml.org,2002:bool';
+    if (typeof val === 'number') return Number.isInteger(val) ? 'tag:yaml.org,2002:int' : 'tag:yaml.org,2002:float';
+    if (typeof val === 'string') {
+      for (const type of this._implicit) {
+        if (type.resolve && type.resolve(val)) return type.tag;
+      }
+      return 'tag:yaml.org,2002:str';
+    }
+    if (val instanceof Date) return 'tag:yaml.org,2002:timestamp';
+    if (val instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(val))) return 'tag:yaml.org,2002:binary';
+    return 'tag:yaml.org,2002:str';
+  }
+}
+
+const DEFAULT_SCHEMA = new Schema()
+  .addType(new YamlType('tag:yaml.org,2002:null', {
+    kind: 'scalar',
+    construct: () => null,
+    resolve: (v) => v === 'null' || v === '~',
+  }))
+  .addType(new YamlType('tag:yaml.org,2002:bool', {
+    kind: 'scalar',
+    construct: (v) => v === 'true',
+    resolve: (v) => v === 'true' || v === 'false',
+  }))
+  .addType(new YamlType('tag:yaml.org,2002:int', {
+    kind: 'scalar',
+    construct: (v) => {
+      if (/^0x[\da-fA-F]+$/.test(v)) return parseInt(v.slice(2), 16);
+      if (/^0o[0-7]+$/.test(v)) return parseInt(v.slice(2), 8);
+      if (/^0b[01]+$/.test(v)) return parseInt(v.slice(2), 2);
+      const n = Number(v);
+      return isNaN(n) || !Number.isFinite(n) ? v : Math.floor(n);
+    },
+    resolve: (v) => {
+      if (/^0x[\da-fA-F]+$/.test(v)) return true;
+      if (/^0o[0-7]+$/.test(v)) return true;
+      if (/^0b[01]+$/.test(v)) return true;
+      if (/^[+-]?[0-9]+$/.test(v) && !/^[+-]?0\d+/.test(v)) return true;
+      return false;
+    },
+  }))
+  .addType(new YamlType('tag:yaml.org,2002:float', {
+    kind: 'scalar',
+    construct: (v) => {
+      const n = Number(v);
+      return isNaN(n) || !Number.isFinite(n) ? v : n;
+    },
+    resolve: (v) => {
+      if (/^[-+]?\.[0-9]+$/.test(v)) return true;
+      if (/^[-+]?[0-9]+\.[0-9]*$/.test(v)) return true;
+      if (/^[-+]?[0-9]+\.?[0-9]*(e|E)[-+]?[0-9]+$/.test(v)) return true;
+      return false;
+    },
+  }))
+  .addType(new YamlType('tag:yaml.org,2002:timestamp', {
+    kind: 'scalar',
+    construct: (v) => parseTimestamp(v) || v,
+    resolve: (v) => parseTimestamp(v) !== null,
+  }))
+  .addType(new YamlType('tag:yaml.org,2002:binary', {
+    kind: 'scalar',
+    construct: (v) => decodeBase64(v),
+    resolve: () => false,
+  }))
+  .addType(new YamlType('tag:yaml.org,2002:str', {
+    kind: 'scalar',
+    construct: (v) => String(v),
+    resolve: () => true,
+  }));
+
+let _baseSchema = DEFAULT_SCHEMA;
+
 // ── YAML Parser ──────────────────────────────────────────
 
-function yamlToJS(yamlStr, cfg, _depth) {
+function yamlToJS(yamlStr, cfg, _depth, _schema) {
   if (_depth === undefined) _depth = 0;
+  if (_schema === undefined) _schema = _baseSchema;
   if (_depth > 50) throw new YAMLException('YAML: recursion too deep (>50) — possible anchor bomb');
   if (byteLength(yamlStr) > cfg.maxInputBytes) {
     throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
@@ -219,42 +323,30 @@ function yamlToJS(yamlStr, cfg, _depth) {
 
   function parseScalar(s) {
     const trimmed = s.trim();
-    const applied = applyTags(trimmed);
-    const tagMatch = applied.match(/^!!(\w+)\s*/);
-    const tagName = tagMatch ? tagMatch[1] : null;
-    const val = tagMatch ? trimmed.slice(tagMatch[0].length) : trimmed;
 
-    if (tagName === 'str') return val;
-    if (tagName === 'null') return null;
-    if (tagName === 'bool') return val === 'true';
-    if (tagName === 'int') { const n = Number(val); return isNaN(n) || !Number.isFinite(n) ? val : n; }
-    if (tagName === 'float') { const n = Number(val); return isNaN(n) || !Number.isFinite(n) ? val : n; }
-    if (tagName === 'timestamp') {
-      const d = parseTimestamp(val);
-      return d !== null ? d : val;
-    }
-    if (tagName === 'binary') return decodeBase64(val);
+    // Detect tags: !!xxx (shorthand) or !xxx (local tag)
+    const tagMatch = trimmed.match(/^(![^\s]+)\s+/);
+    if (tagMatch) {
+      const rawTag = tagMatch[1];
+      const tagVal = trimmed.slice(tagMatch[0].length);
 
-    if (val === 'null' || val === '~') return null;
-    if (val === 'true') return true;
-    if (val === 'false') return false;
-
-    // YAML 1.2 implicit type resolution
-    // hex, octal, binary integers
-    if (/^0x[\da-fA-F]+$/.test(val)) return parseInt(val.slice(2), 16);
-    if (/^0o[0-7]+$/.test(val)) return parseInt(val.slice(2), 8);
-    if (/^0b[01]+$/.test(val)) return parseInt(val.slice(2), 2);
-
-    const num = Number(val);
-    if (!isNaN(num) && Number.isFinite(num) && val !== '' && val.trim() !== '') {
-      // Reject leading zeros (YAML 1.2: 0123 is string, not number)
-      if (/^-?0\d+/.test(val) && !/^-?0[xob]/i.test(val)) return val;
-      return num;
+      if (rawTag.startsWith('!!')) {
+        const fullTag = 'tag:yaml.org,2002:' + rawTag.slice(2);
+        const type = _schema._explicit[fullTag];
+        if (type) return type.construct(tagVal);
+      } else {
+        const type = _schema._explicit[rawTag];
+        if (type) return type.construct(tagVal);
+        return trimmed;
+      }
     }
 
-    // Implicit timestamp detection
-    const ts = parseTimestamp(val);
-    if (ts !== null) return ts;
+    const val = trimmed;
+    for (const type of _schema._implicit) {
+      if (type.resolve && type.resolve(val)) {
+        return type.construct(val);
+      }
+    }
 
     if (val.startsWith('"') && val.endsWith('"')) {
       const inner = val.slice(1, -1);
@@ -378,20 +470,21 @@ function yamlToJS(yamlStr, cfg, _depth) {
       const aname = s.slice(1).split(/[ ,}\]]/)[0];
       return { value: track(resolveAlias(aname)), endPos: aname.length + 1 };
     }
-    const tagPrefix = s.match(/^!!\w+\s+/);
+    const tagPrefix = s.match(/^(![^\s]+)\s+/);
     if (tagPrefix) {
-      const tagName = tagPrefix[0].slice(2).trim();
+      const rawTag = tagPrefix[1];
       const rest = s.slice(tagPrefix[0].length);
       const r = parseInlineFlow(rest, _flowDepth + 1, _line);
       let val = r.value;
       if (val === undefined) val = parseScalar(rest);
-      if (tagName === 'str') val = String(val);
-      else if (tagName === 'int') val = typeof val === 'number' ? Math.floor(val) : Number(val);
-      else if (tagName === 'float') val = Number(val);
-      else if (tagName === 'null') val = null;
-      else if (tagName === 'bool') val = val === 'true' || val === true;
-      else if (tagName === 'timestamp') val = typeof val === 'object' ? val : parseTimestamp(String(val)) || String(val);
-      else if (tagName === 'binary') val = decodeBase64(String(val));
+      let fullTag;
+      if (rawTag.startsWith('!!')) {
+        fullTag = 'tag:yaml.org,2002:' + rawTag.slice(2);
+      } else {
+        fullTag = rawTag;
+      }
+      const type = _schema._explicit[fullTag];
+      if (type) val = type.construct(String(val));
       return { value: track(val), endPos: tagPrefix[0].length + r.endPos };
     }
     if (s.startsWith('"')) {
@@ -454,7 +547,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
           .filter(l => getIndent(l) > indent)
           .map(l => l.slice(indent))
           .join('\n');
-        setAnchor(aname, track(yamlToJS(dummy, cfg, _depth + 1)));
+        setAnchor(aname, track(yamlToJS(dummy, cfg, _depth + 1, _schema)));
       } else {
         setAnchor(aname, track(parseScalar(rest)));
       }
@@ -504,12 +597,12 @@ function yamlToJS(yamlStr, cfg, _depth) {
         const isMappingItem = colonIdxItem >= 0 && (itemContent[colonIdxItem + 1] === ' ' || itemLines.length > 0);
         if (isMappingItem) {
           const itemYaml = [itemContent, ...itemLines.map(l => l.slice(subIndent))].join('\n');
-          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1)));
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema)));
         } else if (itemLines.length === 0) {
           seq.push(track(parseInlineValue(itemContent)));
         } else {
           const itemYaml = itemLines.map(l => l.slice(subIndent)).join('\n');
-          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1)));
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema)));
         }
         i = j - 1;
       } else {
@@ -718,7 +811,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
 
 // ── YAML Multi-Document ─────────────────────────────────
 
-function parseAllYaml(yamlStr, cfg) {
+function parseAllYaml(yamlStr, cfg, _schema) {
   if (byteLength(yamlStr) > cfg.maxInputBytes)
     throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
   const docs = [];
@@ -730,14 +823,14 @@ function parseAllYaml(yamlStr, cfg) {
     if (current.length === 0 && (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('%') || trimmed === '---' || trimmed === '...')) continue;
     if (trimmed === '---' || trimmed === '...') {
       if (current.length > 0) {
-        docs.push(yamlToJS(current.join('\n'), cfg));
+        docs.push(yamlToJS(current.join('\n'), cfg, 0, _schema));
         current = [];
       }
       continue;
     }
     current.push(line);
   }
-  if (current.length > 0) docs.push(yamlToJS(current.join('\n'), cfg));
+  if (current.length > 0) docs.push(yamlToJS(current.join('\n'), cfg, 0, _schema));
   return docs;
 }
 
@@ -814,12 +907,26 @@ function yamlDump(value, opts = {}) {
 
 // ── Standalone API ───────────────────────────────────────
 
-export function parse(yamlStr) {
-  return yamlToJS(yamlStr, { ..._baseCfg });
+export function parse(yamlStr, opts = {}) {
+  let schema = _baseSchema;
+  if (opts.schema instanceof Schema) schema = opts.schema;
+  else if (Array.isArray(opts.types)) {
+    schema = new Schema();
+    for (const t of _baseSchema._types) schema.addType(t);
+    for (const t of opts.types) schema.addType(t);
+  }
+  return yamlToJS(yamlStr, { ..._baseCfg }, 0, schema);
 }
 
-export function parseAll(yamlStr) {
-  return parseAllYaml(yamlStr, { ..._baseCfg });
+export function parseAll(yamlStr, opts = {}) {
+  let schema = _baseSchema;
+  if (opts.schema instanceof Schema) schema = opts.schema;
+  else if (Array.isArray(opts.types)) {
+    schema = new Schema();
+    for (const t of _baseSchema._types) schema.addType(t);
+    for (const t of opts.types) schema.addType(t);
+  }
+  return parseAllYaml(yamlStr, { ..._baseCfg }, schema);
 }
 
 export function dump(value, opts) {
@@ -831,6 +938,12 @@ export function dump(value, opts) {
 export class YamlSecurity {
   constructor(opts) {
     this._overrides = opts ? { ...opts } : {};
+    this._schema = DEFAULT_SCHEMA;
+  }
+
+  setSchema(schema) {
+    if (!(schema instanceof Schema)) throw new YAMLException('setSchema: expected a Schema instance');
+    this._schema = schema;
   }
 
   _getCfg() {
@@ -844,7 +957,7 @@ export class YamlSecurity {
 
   parse(yamlStr) {
     try {
-      const result = yamlToJS(yamlStr, this._getCfg());
+      const result = yamlToJS(yamlStr, this._getCfg(), 0, this._schema);
       return { ok: true, result };
     } catch (e) {
       return { ok: false, error: e.message };
@@ -853,7 +966,7 @@ export class YamlSecurity {
 
   parseAll(yamlStr) {
     try {
-      const docs = parseAllYaml(yamlStr, this._getCfg());
+      const docs = parseAllYaml(yamlStr, this._getCfg(), this._schema);
       return { ok: true, result: docs };
     } catch (e) {
       return { ok: false, error: e.message };
