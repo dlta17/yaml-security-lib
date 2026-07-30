@@ -16,6 +16,11 @@ const DEFAULTS = {
 
 let _baseCfg = { ...DEFAULTS };
 
+/**
+ * Globally adjust parser limits for all instances.
+ * Call with no arguments (or `{}`) to reset to defaults.
+ * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number}} [opts]
+ */
 export function setLimits(opts) {
   if (!opts || Object.keys(opts).length === 0) { _baseCfg = { ...DEFAULTS }; return; }
   for (const key of ['maxNodes', 'maxAlias', 'maxAliasDepth', 'maxExpansion', 'maxInputBytes']) {
@@ -36,7 +41,15 @@ export function setLimits(opts) {
 
 // ── Custom Error ─────────────────────────────────────────
 
+/**
+ * Error thrown by the parser/dumper on invalid YAML or security violations.
+ * Contains optional `mark` with parsing location.
+ */
 export class YAMLException extends Error {
+  /**
+   * @param {string} msg
+   * @param {{line: number, column: number, snippet: string}} [mark]
+   */
   constructor(msg, mark) {
     super(msg);
     this.name = 'YAMLException';
@@ -103,7 +116,19 @@ function parseTimestamp(s) {
 
 // ── Schema System ────────────────────────────────────────
 
+/**
+ * YAML type definition. Holds a tag, kind, construct/resolve functions,
+ * and an optional instance class for mapping/sequence types.
+ */
 export class YamlType {
+  /**
+   * @param {string} tag  Full tag URI (e.g. 'tag:yaml.org,2002:str' or '!upper')
+   * @param {object} [opts]
+   * @param {'scalar'|'mapping'|'sequence'} [opts.kind='scalar']
+   * @param {function} [opts.construct]  Transform parsed value (default identity)
+   * @param {function} [opts.resolve]    Implicit detection predicate (default false)
+   * @param {*}       [opts.instance]    Reserved for mapping/sequence type instances
+   */
   constructor(tag, opts = {}) {
     this.tag = tag;
     this.kind = opts.kind || 'scalar';
@@ -113,6 +138,10 @@ export class YamlType {
   }
 }
 
+/**
+ * Schema registry of YAML types. Controls explicit tag lookup
+ * and implicit type resolution order.
+ */
 export class Schema {
   constructor() {
     this._types = [];
@@ -120,6 +149,12 @@ export class Schema {
     this._implicit = [];
   }
 
+  /**
+   * Register a type. Scalar types with no `instance` are added to
+   * the implicit resolution chain in registration order.
+   * @param {YamlType} type
+   * @returns {Schema} this (chainable)
+   */
   addType(type) {
     this._types.push(type);
     this._explicit[type.tag] = type;
@@ -129,6 +164,35 @@ export class Schema {
     return this;
   }
 
+  /**
+   * Remove a previously registered type by tag.
+   * @param {string} tag
+   * @returns {boolean} true if the type was found and removed
+   */
+  removeType(tag) {
+    const idx = this._types.findIndex(t => t.tag === tag);
+    if (idx < 0) return false;
+    const [type] = this._types.splice(idx, 1);
+    delete this._explicit[tag];
+    const impIdx = this._implicit.indexOf(type);
+    if (impIdx >= 0) this._implicit.splice(impIdx, 1);
+    return true;
+  }
+
+  /**
+   * Check whether a type with the given tag is registered.
+   * @param {string} tag
+   * @returns {boolean}
+   */
+  hasType(tag) {
+    return tag in this._explicit;
+  }
+
+  /**
+   * Return the YAML tag that best describes a JS value.
+   * @param {*} val
+   * @returns {string}
+   */
   tagFor(val) {
     if (val === null || val === undefined) return 'tag:yaml.org,2002:null';
     if (typeof val === 'boolean') return 'tag:yaml.org,2002:bool';
@@ -176,10 +240,14 @@ const DEFAULT_SCHEMA = new Schema()
   .addType(new YamlType('tag:yaml.org,2002:float', {
     kind: 'scalar',
     construct: (v) => {
+      if (/^[-+]?\.(inf|Inf|INF)$/.test(v)) return v.startsWith('-') ? -Infinity : Infinity;
+      if (/^\.(nan|NaN|NAN)$/.test(v)) return NaN;
       const n = Number(v);
       return isNaN(n) || !Number.isFinite(n) ? v : n;
     },
     resolve: (v) => {
+      if (/^[-+]?\.(inf|Inf|INF)$/.test(v)) return true;
+      if (/^\.(nan|NaN|NAN)$/.test(v)) return true;
       if (/^[-+]?\.[0-9]+$/.test(v)) return true;
       if (/^[-+]?[0-9]+\.[0-9]*$/.test(v)) return true;
       if (/^[-+]?[0-9]+\.?[0-9]*(e|E)[-+]?[0-9]+$/.test(v)) return true;
@@ -923,6 +991,12 @@ function yamlDump(value, opts = {}) {
 
 // ── Standalone API ───────────────────────────────────────
 
+/**
+ * Parse a YAML string into a JS value.
+ * @param {string} yamlStr
+ * @param {{schema?: Schema, types?: YamlType[]}} [opts]
+ * @returns {*} Parsed value (throws on error)
+ */
 export function parse(yamlStr, opts = {}) {
   let schema = _baseSchema;
   if (opts.schema instanceof Schema) schema = opts.schema;
@@ -934,6 +1008,12 @@ export function parse(yamlStr, opts = {}) {
   return yamlToJS(yamlStr, { ..._baseCfg }, 0, schema);
 }
 
+/**
+ * Parse a multi-document YAML string.
+ * @param {string} yamlStr
+ * @param {{schema?: Schema, types?: YamlType[]}} [opts]
+ * @returns {any[]} Array of parsed documents (throws on error)
+ */
 export function parseAll(yamlStr, opts = {}) {
   let schema = _baseSchema;
   if (opts.schema instanceof Schema) schema = opts.schema;
@@ -945,18 +1025,35 @@ export function parseAll(yamlStr, opts = {}) {
   return parseAllYaml(yamlStr, { ..._baseCfg }, schema);
 }
 
+/**
+ * Serialize a JS value to YAML.
+ * @param {*} value
+ * @param {DumpOptions} [opts]
+ * @returns {string} YAML string
+ */
 export function dump(value, opts) {
   return yamlDump(value, opts);
 }
 
 // ── Public API Class ──────────────────────────────────────
 
+/**
+ * Safe YAML parser / dumper with error-safe API.
+ * All parse/dump methods return `{ ok, result }` or `{ ok, error }` — never throw.
+ */
 export class YamlSecurity {
+  /**
+   * @param {{maxAliasDepth?: number, maxNodes?: number, maxExpansion?: number}} [opts]
+   */
   constructor(opts) {
     this._overrides = opts ? { ...opts } : {};
     this._schema = DEFAULT_SCHEMA;
   }
 
+  /**
+   * Replace the schema used for parsing on this instance.
+   * @param {Schema} schema
+   */
   setSchema(schema) {
     if (!(schema instanceof Schema)) throw new YAMLException('setSchema: expected a Schema instance');
     this._schema = schema;
@@ -971,6 +1068,11 @@ export class YamlSecurity {
     return cfg;
   }
 
+  /**
+   * Parse a YAML string. Always returns `{ ok, result }` or `{ ok, error }`.
+   * @param {string} yamlStr
+   * @returns {{ok: boolean, result?: any, error?: string}}
+   */
   parse(yamlStr) {
     try {
       const result = yamlToJS(yamlStr, this._getCfg(), 0, this._schema);
@@ -980,15 +1082,36 @@ export class YamlSecurity {
     }
   }
 
-  parseAll(yamlStr) {
+  /**
+   * Parse multi-document YAML. Accepts optional per-call schema/type overrides.
+   * @param {string} yamlStr
+   * @param {{schema?: Schema, types?: YamlType[]}} [opts]  Per-call schema override
+   * @returns {{ok: boolean, result?: any[], error?: string}}
+   */
+  parseAll(yamlStr, opts) {
     try {
-      const docs = parseAllYaml(yamlStr, this._getCfg(), this._schema);
+      let schema = this._schema;
+      if (opts) {
+        if (opts.schema instanceof Schema) schema = opts.schema;
+        else if (Array.isArray(opts.types)) {
+          schema = new Schema();
+          for (const t of this._schema._types) schema.addType(t);
+          for (const t of opts.types) schema.addType(t);
+        }
+      }
+      const docs = parseAllYaml(yamlStr, this._getCfg(), schema);
       return { ok: true, result: docs };
     } catch (e) {
       return { ok: false, error: e.message };
     }
   }
 
+  /**
+   * Serialize a JS value to YAML. Always returns `{ ok, result }` or `{ ok, error }`.
+   * @param {*} value
+   * @param {DumpOptions} [opts]
+   * @returns {{ok: boolean, result?: string, error?: string}}
+   */
   dump(value, opts) {
     try {
       const result = yamlDump(value, opts);
@@ -998,6 +1121,11 @@ export class YamlSecurity {
     }
   }
 
+  /**
+   * Parse YAML and return pretty-printed JSON.
+   * @param {string} yamlStr
+   * @returns {{ok: boolean, result?: string, error?: string}}
+   */
   parseToJSON(yamlStr) {
     const r = this.parse(yamlStr);
     if (!r.ok) return r;

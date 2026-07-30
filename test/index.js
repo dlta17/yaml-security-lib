@@ -289,6 +289,33 @@ const tinyMB = new YamlSecurity();
 assert(!tinyMB.parse('x: ' + 'a'.repeat(2000)).ok, 'maxInputMB=0.001 blocks large input');
 YamlSecurity.setLimits(); // reset
 
+// ── Schema.removeType / hasType ──
+const rtSchema = new Schema()
+  .addType(new YamlType('!a', { kind: 'scalar', construct: (v) => v, resolve: () => false }))
+  .addType(new YamlType('!b', { kind: 'scalar', construct: (v) => v, resolve: () => false }));
+assert(rtSchema.hasType('!a'), 'hasType true before remove');
+assert(rtSchema.removeType('!a'), 'removeType returns true');
+assert(!rtSchema.hasType('!a'), 'hasType false after remove');
+assert(!rtSchema.removeType('!nonexistent'), 'removeType returns false for missing');
+assert(rtSchema.hasType('!b'), 'other types preserved after remove');
+
+// ── .inf / .nan float resolution ──
+assertEqual(p.parse('x: .inf').result, { x: Infinity }, '.inf resolves to Infinity');
+assertEqual(p.parse('x: .Inf').result, { x: Infinity }, '.Inf resolves to Infinity');
+assertEqual(p.parse('x: -.inf').result, { x: -Infinity }, '-.inf resolves to -Infinity');
+const nanResult = p.parse('x: .nan').result;
+assert(typeof nanResult.x === 'number' && isNaN(nanResult.x), '.nan resolves to NaN');
+const nanResult2 = p.parse('x: .NaN').result;
+assert(typeof nanResult2.x === 'number' && isNaN(nanResult2.x), '.NaN resolves to NaN');
+
+// ── parseAll per-call opts on instance ──
+const customParseAllSchema = new Schema()
+  .addType(new YamlType('tag:yaml.org,2002:str', { kind: 'scalar', construct: (v) => String(v), resolve: () => true }))
+  .addType(new YamlType('!upper', { kind: 'scalar', construct: (v) => v.toUpperCase(), resolve: () => false }));
+const paInstance = new YamlSecurity();
+const paResult = paInstance.parseAll('x: !upper hello\n---\ny: world', { schema: customParseAllSchema });
+assertEqual(paResult.result, [{ x: 'HELLO' }, { y: 'world' }], 'parseAll per-call schema');
+
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
