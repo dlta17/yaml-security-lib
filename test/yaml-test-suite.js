@@ -34,8 +34,8 @@ for (const file of files) {
 
     if (!yaml) continue;
 
-    // Normalize visible space markers
-    const cleanYaml = yaml.replace(/␣/g, ' ');
+    // Normalize visible space markers and end-of-file marker
+    const cleanYaml = yaml.replace(/␣/g, ' ').replace(/∎\n?$/, '');
 
     const result = parser.parse(cleanYaml);
     if (!result.ok) {

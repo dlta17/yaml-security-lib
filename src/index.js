@@ -312,7 +312,17 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   while (docStartIdx < lines.length) {
     const raw = lines[docStartIdx];
     const trimmed = raw.trim();
-    if (trimmed === '---' || trimmed.startsWith('--- ') || trimmed === '...') { docStartIdx++; continue; }
+    if (trimmed === '---' || trimmed.startsWith('--- ') || trimmed === '...' || trimmed.startsWith('... ')) {
+      if (trimmed.startsWith('--- ') && trimmed.length > 4) {
+        lines[docStartIdx] = raw.slice(0, raw.length - trimmed.length) + trimmed.slice(4);
+        break;
+      }
+      if (trimmed.startsWith('... ') && trimmed.length > 4) {
+        lines[docStartIdx] = raw.slice(0, raw.length - trimmed.length) + trimmed.slice(4);
+        break;
+      }
+      docStartIdx++; continue;
+    }
     if (trimmed.startsWith('%TAG')) {
       const parts = trimmed.split(/\s+/);
       if (parts.length >= 3) tags[parts[1]] = parts[2];
@@ -397,14 +407,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   // Find the first `:` that acts as a key-value separator:
   // followed by space, tab, EOL, `#`, `}`, `]` — but not inside a quoted string
   function findKeySep(str, start) {
-    let inSingle = false, inDouble = false;
     for (let i = start || 0; i < str.length; i++) {
-      const ch = str[i];
-      if (ch === '\\' && inDouble) { i++; continue; }
-      if (ch === '"' && !inSingle) inDouble = !inDouble;
-      else if (ch === "'" && !inDouble) inSingle = !inSingle;
-      else if (ch === ':' && !inSingle && !inDouble) {
-        if (i + 1 >= str.length || str[i + 1] === ' ' || str[i + 1] === '\t' || str[i + 1] === '#' || str[i + 1] === '}' || str[i + 1] === ']')
+      if (str[i] === ':') {
+        if (i + 1 >= str.length || str[i + 1] === ' ' || str[i + 1] === '\t' || str[i + 1] === '}' || str[i + 1] === ']')
           return i;
       }
     }
@@ -432,7 +437,35 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   }
 
   function parseScalar(s) {
-    const trimmed = s.trim();
+    let trimmed = s.trim();
+
+    // Fold multi-line plain scalars (continuation lines starting with spaces)
+    if (trimmed.includes('\n')) {
+      const lines = trimmed.split('\n');
+      const folded = [];
+      let i = 0;
+      while (i < lines.length) {
+        if (lines[i].trim() === '') {
+          folded.push('');
+          i++;
+        } else {
+          let accum = lines[i];
+          i++;
+          while (i < lines.length && (lines[i].trim() === '' || lines[i].startsWith(' '))) {
+            if (lines[i].trim() === '') {
+              folded.push(accum);
+              accum = '';
+              i++;
+            } else {
+              accum += ' ' + lines[i].trim();
+              i++;
+            }
+          }
+          folded.push(accum);
+        }
+      }
+      trimmed = folded.join('\n');
+    }
 
     const tagMatch = trimmed.match(/^(![^\s]+)\s+/);
     if (tagMatch) {
@@ -457,19 +490,20 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       }
     }
 
-    const val = trimmed;
+    let val = trimmed;
+
+    if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
+      return unescapeYaml(val.slice(1, -1));
+    }
+    if (val.startsWith("'") && val.endsWith("'") && val.length >= 2) {
+      return val.slice(1, -1);
+    }
+
     for (const type of _schema._implicit) {
       if (type.resolve && type.resolve(val)) {
         return type.construct(val);
       }
     }
-
-    if (val.startsWith('"') && val.endsWith('"')) {
-      const inner = val.slice(1, -1);
-      return unescapeYaml(inner);
-    }
-    if ((val.startsWith("'") && val.endsWith("'")))
-      return val.slice(1, -1);
     return val;
   }
 
@@ -638,7 +672,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       }
       if (close > 0) return { value: track(s.slice(1, close).replace(/''/g, "'")), endPos: close + 1 };
     }
-    let end = s.search(/[,}\]\s]/);
+    let end = s.search(/[,})\]]/);
     if (end < 0) return { value: track(parseScalar(s)), endPos: s.length };
     if (end === 0) return { value: track(parseScalar(s)), endPos: s.length };
     let raw = s.slice(0, end);
@@ -758,10 +792,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           }
           if (close > 0) { colonIdx = indent + afterIndent.indexOf(':', close); key = afterIndent.slice(1, close).replace(/''/g, "'"); }
         }
-        if (colonIdx < 0) { colonIdx = findKeySep(line, indent); if (colonIdx >= 0) key = line.slice(indent, colonIdx).trim(); }
         let valStr;
-        // Explicit key syntax: ? key \n : value
-        if (colonIdx < 0 && afterIndent.startsWith('? ')) {
+        // Explicit key syntax: ? key \n : value  (check BEFORE colon detection)
+        if (afterIndent.startsWith('? ')) {
           key = afterIndent.slice(2);
           const nextLine = i + 1 < ls.length ? ls[i + 1].trim() : '';
           if (nextLine.startsWith(': ')) {
@@ -777,12 +810,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
             i++;
             continue;
           }
-        } else if (colonIdx < 0) {
-          i++; continue;
         } else {
+          if (colonIdx < 0) colonIdx = findKeySep(line, indent);
+          if (colonIdx < 0) { i++; continue; }
+          if (key === undefined) key = line.slice(indent, colonIdx).trim();
           valStr = line.slice(colonIdx + 1).trim();
         }
-        currentColumn = (typeof colonIdx === 'number' && colonIdx >= 0 ? colonIdx : 0) + 1;
+        currentColumn = colonIdx >= 0 ? colonIdx + 1 : 0;
 
         // Track merge keys to catch override attempts
         if (key === '<<') {
@@ -924,7 +958,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     result = r.value !== undefined ? track(r.value) : track(parseScalar(topContent));
   } else if (topContent === '' || topContent === '---' || topContent === '...') {
     result = null;
-  } else if (!topContent.includes(':') && !topContent.startsWith('- ') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
+  } else if (findKeySep(topContent) < 0 && !topContent.startsWith('- ') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
     result = track(parseScalar(topContent));
   } else {
     result = parseBlock(0, 0);
