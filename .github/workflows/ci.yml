@@ -27,6 +27,8 @@ jobs:
         run: node test/index.js
       - name: Test fuzz
         run: node test/fuzz.js
+      - name: Install dev deps (rollup)
+        run: npm ci --no-audit --no-fund
       - name: Build + test CJS
         shell: bash
         run: |
