@@ -4,3 +4,4 @@ dist/
 .env
 src/index.cjs
 src/index.min.js
+test-yaml-suite
