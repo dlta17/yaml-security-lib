@@ -57,6 +57,19 @@ Parses multi-document YAML (`---` or `...` separated). Returns an array.
 
 Serializes a JavaScript value to YAML. Options: `indent` (default `2`), `flowLevel` (default `6`).
 
+### `parseAll(str, opts?)` on instance
+
+When called on a `YamlSecurity` instance, `parseAll` accepts an optional second argument with per-call schema overrides:
+
+```js
+const parser = new YamlSecurity()
+parser.parseAll('x: !upper hello\n---\ny: world', {
+  schema: mySchema,
+})
+// or with types array (extends instance schema):
+parser.parseAll('x: !upper hello', { types: [upperType] })
+```
+
 ### `parseToJSON(str)` → `{ ok, result } | { ok, error }`
 
 Parses YAML and returns pretty-printed JSON string.
@@ -128,7 +141,7 @@ const upperType = new YamlType('!upper', {
 |--------|---------|-------------|
 | `kind` | `'scalar'` | Type kind (only `scalar` is used currently) |
 | `construct` | identity | Transforms the raw string into the result value |
-| `resolve` | `() => true` | Returns truthy if the value should be implicitly resolved by this type (checked in order of registration) |
+| `resolve` | `() => false` | Returns truthy if the value should be implicitly resolved by this type (checked in order of registration) |
 | `instance` | `undefined` | Reserved for future use (mapping/sequence instances) |
 
 ### `Schema`
@@ -144,6 +157,8 @@ schema.tagFor('hello') // → 'tag:yaml.org,2002:str'
 ```
 
 - **`addType(type)`** — Registers a type. Returns the Schema (chainable).
+- **`removeType(tag)`** — Removes a type by tag. Returns `true` if found and removed.
+- **`hasType(tag)`** — Returns `true` if a type with that tag is registered.
 - **`tagFor(val)`** — Returns the YAML tag that would be used for a JS value.
 
 ### Standalone `parse` / `parseAll` with options
@@ -180,7 +195,7 @@ The default schema automatically resolves:
 | `!!null` | `null`, `~` |
 | `!!bool` | `true`, `false` |
 | `!!int` | Decimal, hex (`0x`), octal (`0o`), binary (`0b`). Leading zeros (`0123`) are strings. |
-| `!!float` | Decimal numbers, scientific notation |
+| `!!float` | Decimal numbers, scientific notation, `.inf` / `-.inf` / `.nan` |
 | `!!timestamp` | ISO 8601 dates (`2024-01-01`, `2024-01-01T12:00:00Z`) |
 | `!!binary` | Base64 (explicit only) |
 

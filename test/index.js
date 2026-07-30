@@ -316,6 +316,32 @@ const paInstance = new YamlSecurity();
 const paResult = paInstance.parseAll('x: !upper hello\n---\ny: world', { schema: customParseAllSchema });
 assertEqual(paResult.result, [{ x: 'HELLO' }, { y: 'world' }], 'parseAll per-call schema');
 
+// ── Block scalar with ! tag ──
+assertEqual(p.parse('x: !upper |\n  hello\n  world').result, { x: 'hello\nworld\n' }, 'block scalar with ! tag');
+assertEqual(p.parse('x: !!str |\n  hello').result, { x: 'hello\n' }, 'block scalar with !! tag');
+
+// ── Sequence items with tags ──
+assertEqual(p.parse('- !!str 42\n- !!int 3.14').result, ['42', 3], 'sequence items with !! tags');
+assertEqual(p.parse('[!!str 42, !!int 3.14]').result, ['42', 3], 'inline seq items with !! tags');
+
+// ── setSchema reset with no args ──
+const resetSchema = new YamlSecurity();
+resetSchema.setSchema(new Schema().addType(new YamlType('!custom', { kind: 'scalar', construct: (v) => v, resolve: () => true })));
+// After reset, default types still work (int, bool, null, etc.)
+resetSchema.setSchema(); // reset to defaults
+assertEqual(resetSchema.parse('x: 42').result, { x: 42 }, 'default int resolution after schema reset');
+assertEqual(resetSchema.parse('y: true').result, { y: true }, 'default bool after schema reset');
+assertEqual(resetSchema.parse('z: null').result, { z: null }, 'default null after schema reset');
+
+// ── produced counter is global across recursive yamlToJS calls ──
+YamlSecurity.setLimits({ maxNodes: 14 });
+const globalCount = new YamlSecurity();
+// Without fix: each yamlToJS call has its own maxNodes budget
+// With fix: sub-mapping nodes count toward global limit (total > 14 → fail)
+assert(!globalCount.parse('a: 1\nb: 2\nc: 3\nd: 4\nsub:\n  x: 5\n  y: 6').ok,
+  'produced counter shared globally across recursive yamlToJS calls');
+YamlSecurity.setLimits();
+
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

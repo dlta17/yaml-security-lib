@@ -274,13 +274,23 @@ let _baseSchema = DEFAULT_SCHEMA;
 
 // ── YAML Parser ──────────────────────────────────────────
 
-function yamlToJS(yamlStr, cfg, _depth, _schema) {
+function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   if (_depth === undefined) _depth = 0;
   if (_schema === undefined) _schema = _baseSchema;
   if (_depth > 50) throw new YAMLException('YAML: recursion too deep (>50) — possible anchor bomb');
   if (byteLength(yamlStr) > cfg.maxInputBytes) {
     throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
   }
+
+  const state = _state || {
+    produced: 0,
+    aliasHits: 0,
+    anchors: {},
+    anchorDepths: {},
+    mergeOverrideKeys: new Set(),
+    nodeWeights: new WeakMap(),
+  };
+  const { anchors, anchorDepths, mergeOverrideKeys, nodeWeights } = state;
 
   const lines = yamlStr.split('\n');
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
@@ -303,13 +313,6 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
   }
   const contentLines = lines.slice(docStartIdx);
 
-  const anchors = {};
-  const anchorDepths = {};
-  let produced = 0;
-  let aliasHits = 0;
-  const mergeOverrideKeys = new Set();
-  const nodeWeights = new WeakMap();
-
   function nodeWeight(node) {
     if (node === null || typeof node !== 'object') return 1;
     if (nodeWeights.has(node)) return nodeWeights.get(node);
@@ -322,22 +325,22 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
 
   function track(node, weight) {
     if (typeof node !== 'object' || node === null) {
-      produced++;
-      if (produced > cfg.maxNodes)
-        throw err('nodes limit exceeded (possible bomb) — reached ' + produced);
-      if (produced > cfg.maxExpansion)
-        throw err('expansion limit exceeded (possible bomb) — reached ' + produced);
+      state.produced++;
+      if (state.produced > cfg.maxNodes)
+        throw err('nodes limit exceeded (possible bomb) — reached ' + state.produced);
+      if (state.produced > cfg.maxExpansion)
+        throw err('expansion limit exceeded (possible bomb) — reached ' + state.produced);
       return node;
     }
     if (weight === undefined) {
       weight = nodeWeights.has(node) ? nodeWeights.get(node) : 1;
     }
-    produced += weight;
+    state.produced += weight;
     nodeWeights.set(node, weight);
-    if (produced > cfg.maxNodes)
-      throw err('nodes limit exceeded (possible bomb) — reached ' + produced);
-    if (produced > cfg.maxExpansion)
-      throw err('expansion limit exceeded (possible bomb) — reached ' + produced);
+    if (state.produced > cfg.maxNodes)
+      throw err('nodes limit exceeded (possible bomb) — reached ' + state.produced);
+    if (state.produced > cfg.maxExpansion)
+      throw err('expansion limit exceeded (possible bomb) — reached ' + state.produced);
     return node;
   }
 
@@ -350,7 +353,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
   }
 
   function resolveAlias(aname) {
-    if (++aliasHits > cfg.maxAlias) throw new YAMLException('YAML: alias expansion limit exceeded (bomb)');
+    if (++state.aliasHits > cfg.maxAlias) throw new YAMLException('YAML: alias expansion limit exceeded (bomb)');
     const val = anchors[aname];
     if (val === undefined) return aname;
     return val;
@@ -631,7 +634,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
           .filter(l => getIndent(l) > indent)
           .map(l => l.slice(indent))
           .join('\n');
-        setAnchor(aname, track(yamlToJS(dummy, cfg, _depth + 1, _schema)));
+        setAnchor(aname, track(yamlToJS(dummy, cfg, _depth + 1, _schema, state)));
       } else {
         setAnchor(aname, track(parseScalar(rest)));
       }
@@ -681,12 +684,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
         const isMappingItem = colonIdxItem >= 0 && (itemContent[colonIdxItem + 1] === ' ' || itemLines.length > 0);
         if (isMappingItem) {
           const itemYaml = [itemContent, ...itemLines.map(l => l.slice(subIndent))].join('\n');
-          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema)));
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state)));
         } else if (itemLines.length === 0) {
           seq.push(track(parseInlineValue(itemContent)));
         } else {
           const itemYaml = itemLines.map(l => l.slice(subIndent)).join('\n');
-          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema)));
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state)));
         }
         i = j - 1;
       } else {
@@ -724,8 +727,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
         }
 
         // Support explicit block scalar indent indicators (|1, |2, >1, >2, etc.)
-        const blockMatch = valStr.match(/^(\||>)(\d*)([\-+]?)$/);
-        if (blockMatch && valStr.replace(/^!!\w+\s*/, '').trim() === blockMatch[0]) {
+        const valForBlock = valStr.replace(/^![^\s]+\s*/, '');
+        const blockMatch = valForBlock.match(/^(\||>)(\d*)([\-+]?)$/);
+        if (blockMatch && valForBlock.trim() === blockMatch[0]) {
           const blockLines = [];
           let j = i + 1;
           let contentIndent = null;
@@ -1052,9 +1056,11 @@ export class YamlSecurity {
 
   /**
    * Replace the schema used for parsing on this instance.
-   * @param {Schema} schema
+   * Call with no arguments to reset to DEFAULT_SCHEMA.
+   * @param {Schema} [schema]
    */
   setSchema(schema) {
+    if (schema === undefined) { this._schema = DEFAULT_SCHEMA; return; }
     if (!(schema instanceof Schema)) throw new YAMLException('setSchema: expected a Schema instance');
     this._schema = schema;
   }
