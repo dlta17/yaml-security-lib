@@ -108,7 +108,7 @@ export class YamlType {
     this.tag = tag;
     this.kind = opts.kind || 'scalar';
     this.construct = opts.construct || ((v) => v);
-    this.resolve = opts.resolve || (() => true);
+    this.resolve = opts.resolve || (() => false);
     this.instance = opts.instance || undefined;
   }
 }
@@ -288,14 +288,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
     return val;
   }
 
-  function applyTags(s) {
-    for (const handle of Object.keys(tags)) {
-      if (s.startsWith(handle)) {
-        const rest = s.slice(handle.length);
-        if (rest.length > 0) return rest;
+  function expandTag(rawTag) {
+    for (const [handle, prefix] of Object.entries(tags)) {
+      if (rawTag.startsWith(handle)) {
+        const suffix = rawTag.slice(handle.length);
+        if (suffix.length > 0) return prefix + suffix;
       }
     }
-    return s;
+    return rawTag;
   }
 
   let currentLine = -1;
@@ -324,19 +324,25 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
   function parseScalar(s) {
     const trimmed = s.trim();
 
-    // Detect tags: !!xxx (shorthand) or !xxx (local tag)
     const tagMatch = trimmed.match(/^(![^\s]+)\s+/);
     if (tagMatch) {
       const rawTag = tagMatch[1];
       const tagVal = trimmed.slice(tagMatch[0].length);
+      let fullTag;
 
       if (rawTag.startsWith('!!')) {
-        const fullTag = 'tag:yaml.org,2002:' + rawTag.slice(2);
-        const type = _schema._explicit[fullTag];
-        if (type) return type.construct(tagVal);
+        const expanded = expandTag(rawTag);
+        fullTag = expanded !== rawTag ? expanded : 'tag:yaml.org,2002:' + rawTag.slice(2);
       } else {
-        const type = _schema._explicit[rawTag];
-        if (type) return type.construct(tagVal);
+        fullTag = expandTag(rawTag);
+      }
+
+      const type = _schema._explicit[fullTag];
+      if (type) return type.construct(tagVal);
+
+      if (rawTag.startsWith('!!')) {
+        // unknown !! tag — fall through to implicit
+      } else {
         return trimmed;
       }
     }
@@ -479,9 +485,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema) {
       if (val === undefined) val = parseScalar(rest);
       let fullTag;
       if (rawTag.startsWith('!!')) {
-        fullTag = 'tag:yaml.org,2002:' + rawTag.slice(2);
+        const expanded = expandTag(rawTag);
+        fullTag = expanded !== rawTag ? expanded : 'tag:yaml.org,2002:' + rawTag.slice(2);
       } else {
-        fullTag = rawTag;
+        fullTag = expandTag(rawTag);
       }
       const type = _schema._explicit[fullTag];
       if (type) val = type.construct(String(val));

@@ -269,6 +269,26 @@ const dummyType = new YamlType('!dummy', { kind: 'scalar', construct: (v) => v, 
 const chained = new Schema().addType(upperType).addType(dummyType);
 assert(chained instanceof Schema, 'chained addType returns Schema');
 
+// %TAG directive + Schema integration
+const tagSchema = new Schema()
+  .addType(new YamlType('tag:yaml.org,2002:str', { kind: 'scalar', construct: (v) => String(v), resolve: () => true }))
+  .addType(new YamlType('tag:example.com,2000:app:upper', {
+    kind: 'scalar',
+    construct: (v) => String(v).toUpperCase(),
+    resolve: () => false,
+  }));
+const tagResult = parse('%TAG !e! tag:example.com,2000:app:\n---\nx: !e!upper hello', { schema: tagSchema });
+assertEqual(tagResult, { x: 'HELLO' }, '%TAG directive + custom schema via expandTag');
+
+// maxInputBytes / maxInputMB limit
+YamlSecurity.setLimits({ maxInputBytes: 10 });
+const smallLimit = new YamlSecurity();
+assert(!smallLimit.parse('key: value_longer_than_10_bytes').ok, 'maxInputBytes=10 blocks large input');
+YamlSecurity.setLimits({ maxInputMB: 0.001 });
+const tinyMB = new YamlSecurity();
+assert(!tinyMB.parse('x: ' + 'a'.repeat(2000)).ok, 'maxInputMB=0.001 blocks large input');
+YamlSecurity.setLimits(); // reset
+
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

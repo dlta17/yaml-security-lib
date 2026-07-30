@@ -1,6 +1,6 @@
 {
   "name": "yaml-security-lib",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Secure YAML parser — duplicate key detection, alias depth limiting, prototype pollution prevention",
   "main": "index.cjs",
   "types": "src/index.d.ts",
@@ -47,7 +47,7 @@
     "url": "git+https://github.com/dlta17/yaml-security-lib.git"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=16.0.0"
   },
   "devDependencies": {
     "@rollup/plugin-terser": "^1.0.0",

@@ -65,6 +65,24 @@ Parses YAML and returns pretty-printed JSON string.
 
 Globally adjust limits for all parsers (affects existing and new instances).
 
+### `YamlSecurity.setSchema(schema)`
+
+Set a custom Schema on an instance (affects parsing only for that instance).
+
+```js
+import { YamlSecurity, YamlType, Schema } from 'yaml-security-lib'
+
+const schema = new Schema()
+  .addType(new YamlType('!upper', {
+    construct: (v) => String(v).toUpperCase(),
+  }))
+
+const parser = new YamlSecurity()
+parser.setSchema(schema)
+parser.parse('x: !upper hello')
+// → { ok: true, result: { x: 'HELLO' } }
+```
+
 ### `YAMLException`
 
 All internal errors use the `YAMLException` class (extends `Error`). Available as an export for `instanceof` checks:
@@ -89,6 +107,82 @@ const normal = new YamlSecurity()
 normal.parse("&a 1\n&b *a\n&c *b\n&d *c\nkey: *d")
 // → { ok: true, result: { key: 1 } }  ← unaffected by strict config
 ```
+
+## Schema System
+
+Built-in YAML types (`!!str`, `!!int`, `!!float`, `!!bool`, `!!null`, `!!timestamp`, `!!binary`) are resolved automatically. You can extend or replace them with custom types.
+
+### `YamlType`
+
+```js
+import { YamlType } from 'yaml-security-lib'
+
+const upperType = new YamlType('!upper', {
+  kind: 'scalar',           // 'scalar' | 'mapping' | 'sequence'
+  construct: (v) => String(v).toUpperCase(),  // transform parsed value
+  resolve: () => false,     // implicit detection (true to auto-resolve)
+})
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `kind` | `'scalar'` | Type kind (only `scalar` is used currently) |
+| `construct` | identity | Transforms the raw string into the result value |
+| `resolve` | `() => true` | Returns truthy if the value should be implicitly resolved by this type (checked in order of registration) |
+| `instance` | `undefined` | Reserved for future use (mapping/sequence instances) |
+
+### `Schema`
+
+```js
+import { Schema } from 'yaml-security-lib'
+
+const schema = new Schema()
+  .addType(upperType)
+  .addType(reverseType)
+
+schema.tagFor('hello') // → 'tag:yaml.org,2002:str'
+```
+
+- **`addType(type)`** — Registers a type. Returns the Schema (chainable).
+- **`tagFor(val)`** — Returns the YAML tag that would be used for a JS value.
+
+### Standalone `parse` / `parseAll` with options
+
+```js
+import { parse, parseAll } from 'yaml-security-lib'
+
+// Custom schema
+parse('x: !upper hello', { schema: mySchema })
+
+// Extend default schema with custom types
+parse('x: !upper hello', { types: [upperType] })
+
+parseAll('---\nx: !upper hello\n---\ny: 2', { schema: mySchema })
+```
+
+### `%TAG` directives
+
+Custom tag handles via `%TAG` directives are expanded and resolved against the active Schema:
+
+```js
+parse('%TAG !e! tag:example.com:\n---\nx: !e!upper hello', {
+  schema: tagSchema,  // schema with type for 'tag:example.com:upper'
+})
+```
+
+### DEFAULT_SCHEMA
+
+The default schema automatically resolves:
+
+| Tag | Implicitly resolves |
+|-----|-------------------|
+| `!!str` | Any unmatched value |
+| `!!null` | `null`, `~` |
+| `!!bool` | `true`, `false` |
+| `!!int` | Decimal, hex (`0x`), octal (`0o`), binary (`0b`). Leading zeros (`0123`) are strings. |
+| `!!float` | Decimal numbers, scientific notation |
+| `!!timestamp` | ISO 8601 dates (`2024-01-01`, `2024-01-01T12:00:00Z`) |
+| `!!binary` | Base64 (explicit only) |
 
 ## Browser
 
