@@ -18,32 +18,29 @@ let _baseCfg = { ...DEFAULTS };
 
 export function setLimits(opts) {
   if (!opts || Object.keys(opts).length === 0) { _baseCfg = { ...DEFAULTS }; return; }
-  if (opts.maxNodes !== undefined) _baseCfg.maxNodes = opts.maxNodes;
-  if (opts.maxAlias !== undefined) _baseCfg.maxAlias = opts.maxAlias;
-  if (opts.maxAliasDepth !== undefined) _baseCfg.maxAliasDepth = opts.maxAliasDepth;
-  if (opts.maxExpansion !== undefined) _baseCfg.maxExpansion = opts.maxExpansion;
-  if (opts.maxInputMB !== undefined) _baseCfg.maxInputBytes = Math.round(opts.maxInputMB * 1_048_576);
-  if (opts.maxInputBytes !== undefined) _baseCfg.maxInputBytes = opts.maxInputBytes;
-}
-
-// ── Billion Laughs / Expansion Guard ────────────────────
-
-function deepSize(v, depth) {
-  if (depth > 50) return 0;
-  if (v === null || v === undefined) return 1;
-  if (typeof v !== 'object') return 1;
-  let n = 1;
-  if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) n += deepSize(v[i], depth + 1); }
-  else { const ks = Object.keys(v); for (let i = 0; i < ks.length; i++) n += deepSize(v[ks[i]], depth + 1); }
-  return n;
+  for (const key of ['maxNodes', 'maxAlias', 'maxAliasDepth', 'maxExpansion', 'maxInputBytes']) {
+    if (opts[key] !== undefined) {
+      const v = opts[key];
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 1 || !Number.isInteger(v))
+        throw new YAMLException('setLimits: ' + key + ' must be a positive integer');
+      _baseCfg[key] = v;
+    }
+  }
+  if (opts.maxInputMB !== undefined) {
+    const v = opts.maxInputMB;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0.001)
+      throw new YAMLException('setLimits: maxInputMB must be a positive number');
+    _baseCfg.maxInputBytes = Math.round(v * 1_048_576);
+  }
 }
 
 // ── Custom Error ─────────────────────────────────────────
 
 export class YAMLException extends Error {
-  constructor(msg) {
+  constructor(msg, mark) {
     super(msg);
     this.name = 'YAMLException';
+    this.mark = mark || null;
   }
 }
 
@@ -84,6 +81,26 @@ function byteLength(s) {
   return s.length;
 }
 
+// ── Base64 decode (Node & browser) ───────────────────────
+
+function decodeBase64(s) {
+  if (typeof Buffer !== 'undefined') return Buffer.from(s, 'base64');
+  return Uint8Array.from(atob(s), c => c.charCodeAt(0));
+}
+
+// ── YAML 1.2 implicit type detection ─────────────────────
+
+const TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:Z|([+-]\d{2})(?::?(\d{2}))?)?)?$/;
+function parseTimestamp(s) {
+  const m = s.match(TIMESTAMP_RE);
+  if (!m) return null;
+  const [, Y, M, D, h, mi, sec, ms, tzH, tzM] = m;
+  const date = new Date(Date.UTC(+Y, +M - 1, +D, h|0, mi|0, sec|0, ms ? +ms.padEnd(3, '0').slice(0, 3) : 0));
+  if (tzH) date.setUTCHours(date.getUTCHours() - (+tzH));
+  if (tzM) date.setUTCMinutes(date.getUTCMinutes() - (+tzM * (tzH < 0 ? -1 : 1)));
+  return isNaN(date.getTime()) ? null : date;
+}
+
 // ── YAML Parser ──────────────────────────────────────────
 
 function yamlToJS(yamlStr, cfg, _depth) {
@@ -118,13 +135,37 @@ function yamlToJS(yamlStr, cfg, _depth) {
   const anchorDepths = {};
   let produced = 0;
   let aliasHits = 0;
+  const mergeOverrideKeys = new Set();
+  const nodeWeights = new WeakMap();
+
+  function nodeWeight(node) {
+    if (node === null || typeof node !== 'object') return 1;
+    if (nodeWeights.has(node)) return nodeWeights.get(node);
+    let w = 1;
+    if (Array.isArray(node)) for (const item of node) w += nodeWeight(item);
+    else for (const k of Object.keys(node)) w += nodeWeight(node[k]);
+    nodeWeights.set(node, w);
+    return w;
+  }
 
   function track(node, weight) {
-    produced += weight || 1;
+    if (typeof node !== 'object' || node === null) {
+      produced++;
+      if (produced > cfg.maxNodes)
+        throw err('nodes limit exceeded (possible bomb) — reached ' + produced);
+      if (produced > cfg.maxExpansion)
+        throw err('expansion limit exceeded (possible bomb) — reached ' + produced);
+      return node;
+    }
+    if (weight === undefined) {
+      weight = nodeWeights.has(node) ? nodeWeights.get(node) : 1;
+    }
+    produced += weight;
+    nodeWeights.set(node, weight);
     if (produced > cfg.maxNodes)
-      throw err('nodes limit exceeded (possible bomb)');
+      throw err('nodes limit exceeded (possible bomb) — reached ' + produced);
     if (produced > cfg.maxExpansion)
-      throw err('expansion limit exceeded (possible bomb)');
+      throw err('expansion limit exceeded (possible bomb) — reached ' + produced);
     return node;
   }
 
@@ -144,15 +185,36 @@ function yamlToJS(yamlStr, cfg, _depth) {
   }
 
   function applyTags(s) {
-    // Apply %TAG directive shortcuts to !!tags
     for (const handle of Object.keys(tags)) {
       if (s.startsWith(handle)) {
         const rest = s.slice(handle.length);
-        // Only apply if handle is ! or !something! and rest starts with a non-empty tag
         if (rest.length > 0) return rest;
       }
     }
     return s;
+  }
+
+  let currentLine = -1;
+  let currentColumn = -1;
+
+  function err(msg, col) {
+    const loc = currentLine >= 0 ? ' at line ' + (currentLine + 1) : '';
+    const colStr = col !== undefined && currentLine >= 0 ? ', column ' + col : (currentColumn >= 0 && currentLine >= 0 ? ', column ' + currentColumn : '');
+    let snippet = '';
+    if (currentLine >= 0 && currentLine < lines.length) {
+      const src = lines[currentLine] || '';
+      snippet = '\n\n  ' + src + '\n  ' + ' '.repeat(Math.max(0, col !== undefined ? col : currentColumn > 0 ? currentColumn : 0)) + '^';
+    }
+    const mark = currentLine >= 0 ? { line: currentLine + 1, column: (col !== undefined ? col : currentColumn) + 1, snippet } : null;
+    return new YAMLException('YAML' + loc + colStr + ': ' + msg + snippet, mark);
+  }
+
+  function getIndent(line) {
+    let i = 0;
+    while (i < line.length && line[i] === ' ') i++;
+    if (i < line.length && line[i] === '\t')
+      throw err('Tab characters are not allowed for indentation in YAML 1.2', i);
+    return i;
   }
 
   function parseScalar(s) {
@@ -165,15 +227,35 @@ function yamlToJS(yamlStr, cfg, _depth) {
     if (tagName === 'str') return val;
     if (tagName === 'null') return null;
     if (tagName === 'bool') return val === 'true';
-    if (tagName === 'int') { const n = Number(val); return isNaN(n) ? val : n; }
-    if (tagName === 'float') { const n = Number(val); return isNaN(n) ? val : n; }
-    if (tagName === 'timestamp') return val;
+    if (tagName === 'int') { const n = Number(val); return isNaN(n) || !Number.isFinite(n) ? val : n; }
+    if (tagName === 'float') { const n = Number(val); return isNaN(n) || !Number.isFinite(n) ? val : n; }
+    if (tagName === 'timestamp') {
+      const d = parseTimestamp(val);
+      return d !== null ? d : val;
+    }
+    if (tagName === 'binary') return decodeBase64(val);
 
     if (val === 'null' || val === '~') return null;
     if (val === 'true') return true;
     if (val === 'false') return false;
+
+    // YAML 1.2 implicit type resolution
+    // hex, octal, binary integers
+    if (/^0x[\da-fA-F]+$/.test(val)) return parseInt(val.slice(2), 16);
+    if (/^0o[0-7]+$/.test(val)) return parseInt(val.slice(2), 8);
+    if (/^0b[01]+$/.test(val)) return parseInt(val.slice(2), 2);
+
     const num = Number(val);
-    if (!isNaN(num) && val !== '' && val.trim() !== '') return num;
+    if (!isNaN(num) && Number.isFinite(num) && val !== '' && val.trim() !== '') {
+      // Reject leading zeros (YAML 1.2: 0123 is string, not number)
+      if (/^-?0\d+/.test(val) && !/^-?0[xob]/i.test(val)) return val;
+      return num;
+    }
+
+    // Implicit timestamp detection
+    const ts = parseTimestamp(val);
+    if (ts !== null) return ts;
+
     if (val.startsWith('"') && val.endsWith('"')) {
       const inner = val.slice(1, -1);
       return unescapeYaml(inner);
@@ -183,22 +265,27 @@ function yamlToJS(yamlStr, cfg, _depth) {
     return val;
   }
 
-  function parseInlineFlow(str, _flowDepth) {
+  function parseInlineFlow(str, _flowDepth, _line) {
     if (_flowDepth === undefined) _flowDepth = 0;
     if (_flowDepth > 100) throw new YAMLException('YAML: flow nesting too deep (>100)');
     const s = str.trim();
+    const offset = str.length - s.length;
     if (s.startsWith('[')) {
       const items = [];
       let i = 1;
       while (i < s.length) {
         const c = s[i];
-        if (c === ']') { const exp = deepSize(items, 0); return { value: track(items, exp), endPos: i + 1 }; }
+        if (c === ']') {
+          const w = items.reduce((s, item) => s + nodeWeight(item), 1);
+          return { value: track(items, w), endPos: i + 1 };
+        }
         if (c === ',' || c === ' ') { i++; continue; }
-        const r = parseInlineFlow(s.slice(i), _flowDepth + 1);
+        const r = parseInlineFlow(s.slice(i), _flowDepth + 1, _line);
         items.push(track(r.value));
         i += r.endPos;
       }
-      const expA = deepSize(items, 0); return { value: track(items, expA), endPos: s.length };
+      const w = items.reduce((s, item) => s + nodeWeight(item), 1);
+      return { value: track(items, w), endPos: s.length };
     }
     if (s.startsWith('{')) {
       const obj = {};
@@ -206,10 +293,14 @@ function yamlToJS(yamlStr, cfg, _depth) {
       let i = 1;
       while (i < s.length) {
         const c = s[i];
-        if (c === '}') { const exp = deepSize(obj, 0); return { value: track(obj, exp), endPos: i + 1 }; }
+        if (c === '}') {
+          const w = Object.values(obj).reduce((s, item) => s + nodeWeight(item), 1);
+          return { value: track(obj, w), endPos: i + 1 };
+        }
         if (c === ',' || c === ' ') { i++; continue; }
         let key;
         if (s[i] === '"' || s[i] === "'") {
+          if (_line !== undefined) currentColumn = (_line.length - s.length) + offset + i;
           const quote = s[i];
           let close = -1;
           let pos = i + 1;
@@ -220,9 +311,16 @@ function yamlToJS(yamlStr, cfg, _depth) {
               pos++;
             }
           } else {
-            close = s.indexOf("'", i + 1);
+            while (pos < s.length) {
+              if (s[pos] === "'" && pos + 1 < s.length && s[pos + 1] === "'") { pos += 2; continue; }
+              if (s[pos] === "'") { close = pos; break; }
+              pos++;
+            }
           }
-          if (close < 0) { const exp = deepSize(obj, 0); return { value: track(obj, exp), endPos: s.length }; }
+          if (close < 0) {
+            const w = Object.values(obj).reduce((s, item) => s + nodeWeight(item), 1);
+            return { value: track(obj, w), endPos: s.length };
+          }
           key = s.slice(i + 1, close);
           if (quote === '"') key = unescapeYaml(key);
           i = close + 1;
@@ -235,12 +333,12 @@ function yamlToJS(yamlStr, cfg, _depth) {
         if (seenKeys.has(key)) throw new YAMLException('YAML: Duplicate key: "' + key + '"');
         seenKeys.add(key);
         while (i < s.length && (s[i] === ' ' || s[i] === ':')) i++;
-        const r = parseInlineFlow(s.slice(i), _flowDepth + 1);
+        const r = parseInlineFlow(s.slice(i), _flowDepth + 1, _line);
         const val = r.value;
         if (typeof val === 'string' && val.startsWith('&')) {
           const aname = val.slice(1).split(/[ ,\]}]/)[0];
           const rest = val.slice(aname.length + 1).trim();
-          const rr = parseInlineFlow(rest, _flowDepth + 1);
+          const rr = parseInlineFlow(rest, _flowDepth + 1, _line);
           const anchored = track(rr.value);
           const srcAnchor = rest.startsWith('*') ? rest.slice(1).split(/[ ,}\]]/)[0] : null;
           setAnchor(aname, anchored, srcAnchor);
@@ -255,7 +353,8 @@ function yamlToJS(yamlStr, cfg, _depth) {
           i += r.endPos;
         }
       }
-      const expO = deepSize(obj, 0); return { value: track(obj, expO), endPos: s.length };
+      const w = Object.values(obj).reduce((s, item) => s + nodeWeight(item), 1);
+      return { value: track(obj, w), endPos: s.length };
     }
     if (s.startsWith('&')) {
       const nameEnd = s.slice(1).search(/[ \t\[{"'*,]/);
@@ -268,7 +367,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
       const afterName = s.slice(1 + nameEnd);
       const rest = afterName.trim();
       const wsLen = afterName.length - rest.length;
-      const r = rest ? parseInlineFlow(rest, _flowDepth + 1) : { value: null, endPos: 0 };
+      const r = rest ? parseInlineFlow(rest, _flowDepth + 1, _line) : { value: null, endPos: 0 };
       const val = track(r.value !== undefined ? r.value : rest);
       const restTrimmed = rest.trim();
       const srcAnchor = restTrimmed.startsWith('*') ? restTrimmed.slice(1).split(/[ ,}\]]/)[0] : null;
@@ -283,7 +382,7 @@ function yamlToJS(yamlStr, cfg, _depth) {
     if (tagPrefix) {
       const tagName = tagPrefix[0].slice(2).trim();
       const rest = s.slice(tagPrefix[0].length);
-      const r = parseInlineFlow(rest, _flowDepth + 1);
+      const r = parseInlineFlow(rest, _flowDepth + 1, _line);
       let val = r.value;
       if (val === undefined) val = parseScalar(rest);
       if (tagName === 'str') val = String(val);
@@ -291,7 +390,8 @@ function yamlToJS(yamlStr, cfg, _depth) {
       else if (tagName === 'float') val = Number(val);
       else if (tagName === 'null') val = null;
       else if (tagName === 'bool') val = val === 'true' || val === true;
-      else if (tagName === 'timestamp') val = String(val);
+      else if (tagName === 'timestamp') val = typeof val === 'object' ? val : parseTimestamp(String(val)) || String(val);
+      else if (tagName === 'binary') val = decodeBase64(String(val));
       return { value: track(val), endPos: tagPrefix[0].length + r.endPos };
     }
     if (s.startsWith('"')) {
@@ -308,8 +408,14 @@ function yamlToJS(yamlStr, cfg, _depth) {
       }
     }
     if (s.startsWith("'")) {
-      const close = s.indexOf("'", 1);
-      if (close > 0) return { value: track(s.slice(1, close)), endPos: close + 1 };
+      let close = -1;
+      let pos = 1;
+      while (pos < s.length) {
+        if (s[pos] === "'" && pos + 1 < s.length && s[pos + 1] === "'") { pos += 2; continue; }
+        if (s[pos] === "'") { close = pos; break; }
+        pos++;
+      }
+      if (close > 0) return { value: track(s.slice(1, close).replace(/''/g, "'")), endPos: close + 1 };
     }
     let end = s.search(/[,}\]\s]/);
     if (end < 0) return { value: track(parseScalar(s)), endPos: s.length };
@@ -325,28 +431,19 @@ function yamlToJS(yamlStr, cfg, _depth) {
     return track(parseScalar(str));
   }
 
-  let currentLine = -1;
-
-  function err(msg) {
-    const loc = currentLine >= 0 ? ' at line ' + (currentLine + 1) : '';
-    return new YAMLException('YAML' + loc + ': ' + msg);
-  }
-
-  function getIndent(line) {
-    let i = 0;
-    while (i < line.length && (line[i] === ' ' || line[i] === '\t')) i++;
-    return i;
-  }
-
-  // Pre-scan for anchors at all levels (not just top-level)
+  // Pre-scan for anchors at all levels
+  let _anchoring = false;
   for (let i = 0; i < contentLines.length; i++) {
+    currentLine = i;
     const line = contentLines[i];
     const trimmed = line.trim();
     if (trimmed.startsWith('&') && trimmed.includes(' ')) {
+      if (_anchoring) continue; // guard re-entrancy
+      _anchoring = true;
       const space = trimmed.indexOf(' ');
       const aname = trimmed.slice(1, space);
       const rest = trimmed.slice(space + 1);
-      if (anchors[aname] !== undefined) continue; // already scanned
+      if (anchors[aname] !== undefined) { _anchoring = false; continue; }
       if (rest.startsWith('*')) {
         const srcAnchor = rest.slice(1).trim();
         const val = track(resolveAlias(srcAnchor));
@@ -361,8 +458,10 @@ function yamlToJS(yamlStr, cfg, _depth) {
       } else {
         setAnchor(aname, track(parseScalar(rest)));
       }
+      _anchoring = false;
     }
   }
+  _anchoring = false;
 
   function parseBlock(startIdx, baseIndent, sourceLines) {
     const ls = sourceLines || contentLines;
@@ -438,7 +537,14 @@ function yamlToJS(yamlStr, cfg, _depth) {
         }
         if (colonIdx < 0) { colonIdx = line.indexOf(':'); key = line.slice(indent, colonIdx).trim(); }
         if (colonIdx < 0) { i++; continue; }
+        currentColumn = colonIdx + 1;
         let valStr = line.slice(colonIdx + 1).trim();
+
+        // Track merge keys to catch override attempts
+        if (key === '<<') {
+          mergeOverrideKeys.clear();
+          for (const existingKey of seenKeys) mergeOverrideKeys.add(existingKey);
+        }
 
         // Support explicit block scalar indent indicators (|1, |2, >1, >2, etc.)
         const blockMatch = valStr.match(/^(\||>)(\d*)([\-+]?)$/);
@@ -464,7 +570,6 @@ function yamlToJS(yamlStr, cfg, _depth) {
             else if (chomp !== 'strip') text = text + '\n';
             text = chomp === 'strip' ? text.replace(/\n+$/, '') : text;
           } else {
-            // Folded block scalar — fold lines correctly
             const folded = [];
             let li = 0;
             while (li < blockLines.length) {
@@ -559,7 +664,10 @@ function yamlToJS(yamlStr, cfg, _depth) {
       i++;
     }
 
-    if (inSeq) { const expS = deepSize(seq, 0); return track(seq, expS); }
+    if (inSeq) {
+      const w = seq.reduce((s, item) => s + nodeWeight(item), 1);
+      return track(seq, w);
+    }
     return track(result);
   }
 
@@ -571,7 +679,6 @@ function yamlToJS(yamlStr, cfg, _depth) {
   } else if (top === '' || top === '---' || top === '...') {
     result = null;
   } else if (!top.includes(':') && !top.startsWith('- ') && !top.startsWith('&') && !top.startsWith('*')) {
-    // Standalone scalar
     result = track(parseScalar(top));
   } else {
     result = parseBlock(0, 0);
@@ -588,7 +695,11 @@ function yamlToJS(yamlStr, cfg, _depth) {
         for (const src of list) {
           if (src && typeof src === 'object' && !Array.isArray(src)) {
             for (const sk of Object.keys(src)) {
-              if (!(sk in merged) && sk !== '<<') safeAssign(merged, sk, resolveMerges(src[sk]));
+              if (!(sk in merged) && sk !== '<<') {
+                if (mergeOverrideKeys.has(sk))
+                  throw new YAMLException('Merge key << overwrites existing key "' + sk + '"');
+                safeAssign(merged, sk, resolveMerges(src[sk]));
+              }
             }
           }
         }
@@ -616,7 +727,6 @@ function parseAllYaml(yamlStr, cfg) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
-    // Skip directives and blank lines at document start
     if (current.length === 0 && (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('%') || trimmed === '---' || trimmed === '...')) continue;
     if (trimmed === '---' || trimmed === '...') {
       if (current.length > 0) {
@@ -636,9 +746,14 @@ function parseAllYaml(yamlStr, cfg) {
 function yamlDump(value, opts = {}) {
   const indent = opts.indent !== undefined ? opts.indent : 2;
   const flowLevel = opts.flowLevel !== undefined ? opts.flowLevel : 6;
+  const sortKeys = opts.sortKeys === true;
+  const lineWidth = opts.lineWidth !== undefined ? opts.lineWidth : 0;
+  const forceQuotes = opts.forceQuotes || false;
+  const quotingType = opts.quotingType === 'double' ? 'double' : 'single';
   const visited = new Set();
   function needsQuotes(s) {
     if (typeof s !== 'string') return false;
+    if (forceQuotes) return true;
     if (s === '' || s === 'null' || s === 'true' || s === 'false' || s === 'yes' || s === 'no' || s === 'on' || s === 'off') return true;
     if (/^[ \t]|^[#!&*?\-:>|\[\]{}%@`]|[,\[\]{}<>"\n]|^$|^\d+(\.\d+)?$/.test(s)) return true;
     if (s.includes(': ') || s.includes(' #') || s.startsWith(':') || s.endsWith(':') || s.endsWith(' ') || s.endsWith('\t')) return true;
@@ -646,10 +761,15 @@ function yamlDump(value, opts = {}) {
   }
   function quote(s) {
     if (needsQuotes(s)) {
-      if (s.includes("'") && !s.includes('"')) return '"' + s + '"';
+      if (quotingType === 'double') return '"' + s.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\n').replace(/\t/g, '\\t') + '"';
+      if (s.includes("'")) return '"' + s.replace(/[\\"]/g, '\\$&') + '"';
       return "'" + s.replace(/'/g, "''") + "'";
     }
     return s;
+  }
+  function wrapLine(prefix, content) {
+    if (lineWidth <= 0 || prefix.length + content.length <= lineWidth) return prefix + content;
+    return prefix + content.replace(RegExp('(.{' + (lineWidth - prefix.length) + '})', 'g'), '$1\n' + ' '.repeat(prefix.length));
   }
   function _dump(v, depth) {
     if (typeof v === 'object' && v !== null) {
@@ -663,17 +783,23 @@ function yamlDump(value, opts = {}) {
     else if (typeof v === 'number') result = isNaN(v) ? 'null' : String(v);
     else if (typeof v === 'bigint') result = v.toString();
     else if (typeof v === 'string') result = quote(v);
+    else if (v instanceof Date) result = v.toISOString();
+    else if (v instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(v))) {
+      const b64 = typeof Buffer !== 'undefined' ? Buffer.from(v).toString('base64') : btoa(String.fromCharCode(...v));
+      result = '!!binary ' + b64;
+    }
     else if (Array.isArray(v)) {
       if (v.length === 0) result = '[]';
       else if (depth >= flowLevel) result = '[' + v.map(item => _dump(item, depth + 1)).join(', ') + ']';
       else result = v.map(item => sp + '- ' + _dump(item, depth + 1).trimStart()).join('\n');
     } else if (typeof v === 'object') {
-      const keys = Object.keys(v);
+      let keys = Object.keys(v);
+      if (sortKeys) keys = keys.sort();
       if (keys.length === 0) result = '{}';
       else if (depth >= flowLevel) result = '{' + keys.map(k => quote(k) + ': ' + _dump(v[k], depth + 1)).join(', ') + '}';
       else result = keys.map(k => {
         const vv = v[k];
-        const isScalar = vv === null || vv === undefined || typeof vv !== 'object';
+        const isScalar = vv === null || vv === undefined || typeof vv !== 'object' || vv instanceof Date || vv instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(vv));
         if (isScalar) return sp + quote(k) + ': ' + _dump(vv, depth + 1);
         const val = _dump(vv, depth + 1);
         if (val.startsWith('{') && val.endsWith('}') || val.startsWith('[') && val.endsWith(']')) return sp + quote(k) + ': ' + val;
@@ -686,7 +812,21 @@ function yamlDump(value, opts = {}) {
   return _dump(value, 0);
 }
 
-// ── Public API ──────────────────────────────────────────
+// ── Standalone API ───────────────────────────────────────
+
+export function parse(yamlStr) {
+  return yamlToJS(yamlStr, { ..._baseCfg });
+}
+
+export function parseAll(yamlStr) {
+  return parseAllYaml(yamlStr, { ..._baseCfg });
+}
+
+export function dump(value, opts) {
+  return yamlDump(value, opts);
+}
+
+// ── Public API Class ──────────────────────────────────────
 
 export class YamlSecurity {
   constructor(opts) {
@@ -736,5 +876,4 @@ export class YamlSecurity {
   }
 }
 
-// Static method
 YamlSecurity.setLimits = setLimits;

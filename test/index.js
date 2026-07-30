@@ -1,4 +1,4 @@
-import { YamlSecurity } from '../src/index.js';
+import { YamlSecurity, parse, parseAll, dump, YAMLException } from '../src/index.js';
 
 let passed = 0;
 let failed = 0;
@@ -161,6 +161,44 @@ const small = new YamlSecurity({ maxExpansion: 1000 });
 assert(!small.parse(billionLaughs).ok, 'Billion Laughs blocked with maxExpansion=1000');
 const normal = new YamlSecurity({ maxExpansion: 200_000 });
 assert(!normal.parse(billionLaughs).ok, 'Billion Laughs blocked even with maxExpansion=200K');
+
+// ── Error messages with line/column/snippet ──
+const errResult = p.parse('x:\n  y: 1\n  y: 2');
+assert(!errResult.ok, 'error on duplicate key');
+assert(errResult.error.includes('line 3'), 'error includes line number');
+
+// ── Standalone functions ──
+assertEqual(parse('test: 42'), { test: 42 }, 'standalone parse');
+const allDocs = parseAll('a: 1\n---\nb: 2');
+assertEqual(allDocs, [{ a: 1 }, { b: 2 }], 'standalone parseAll');
+const dumpStr = dump({ hello: 'world' });
+assert(dumpStr.includes('hello:'), 'standalone dump');
+
+// ── setLimits validation ──
+assertThrows(() => YamlSecurity.setLimits({ maxNodes: -1 }), 'setLimits rejects negative');
+assertThrows(() => YamlSecurity.setLimits({ maxNodes: 0 }), 'setLimits rejects zero');
+assertThrows(() => YamlSecurity.setLimits({ maxNodes: 1.5 }), 'setLimits rejects float');
+assertThrows(() => YamlSecurity.setLimits({ maxExpansion: Infinity }), 'setLimits rejects Infinity');
+YamlSecurity.setLimits(); // reset
+
+// ── Tab indentation ──
+assert(!p.parse('a:\n\tb: 1').ok, 'tab indentation rejected');
+
+// ── Hex / octal / binary integers ──
+assertEqual(p.parse('x: 0xFF').result, { x: 255 }, 'hex 0xFF');
+assertEqual(p.parse('x: 0o77').result, { x: 63 }, 'octal 0o77');
+assertEqual(p.parse('x: 0b1010').result, { x: 10 }, 'binary 0b1010');
+
+// ── Leading zeros are strings (YAML 1.2) ──
+assertEqual(p.parse('x: 0123').result, { x: '0123' }, 'leading zero is string');
+
+// ── Dumper: sortKeys ──
+const sorted = dump({ b: 2, a: 1 }, { sortKeys: true });
+assert(sorted.indexOf('a:') < sorted.indexOf('b:'), 'dump sortKeys');
+
+// ── Dumper: forceQuotes ──
+const quoted = dump({ key: 'value' }, { forceQuotes: true });
+assert(quoted.includes("'key'") || quoted.includes('"key"'), 'dump forceQuotes');
 
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed`);

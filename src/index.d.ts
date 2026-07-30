@@ -1,5 +1,6 @@
 export class YAMLException extends Error {
   constructor(msg: string);
+  mark: { line: number; column: number; snippet: string } | null;
 }
 
 export interface YamlSecurityOptions {
@@ -26,6 +27,10 @@ export interface YamlResult<T = any> {
 export interface DumpOptions {
   indent?: number;
   flowLevel?: number;
+  sortKeys?: boolean;
+  lineWidth?: number;
+  forceQuotes?: boolean;
+  quotingType?: 'single' | 'double';
 }
 
 export class YamlSecurity {
@@ -43,3 +48,9 @@ export class YamlSecurity {
 }
 
 export function setLimits(opts?: Partial<SetLimitsOptions>): void;
+
+export function parse(yamlStr: string): any;
+
+export function parseAll(yamlStr: string): any[];
+
+export function dump(value: any, opts?: DumpOptions): string;
