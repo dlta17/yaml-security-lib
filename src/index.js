@@ -295,7 +295,6 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
 
   const state = _state || {
     produced: 0,
-    expanded: 0,
     aliasHits: 0,
     anchors: {},
     anchorDepths: {},
