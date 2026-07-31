@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.3 (2026-07-31)
+
+### Bug Fixes
+- **`maxDepth` constructor option**: `_getCfg()` now forwards `maxDepth` — `new YamlSecurity({ maxDepth: 10 })` works correctly
+- **Remove dead code**: unused `state.expanded` field removed
+
 ## 1.7.2 (2026-07-31)
 
 ### Security

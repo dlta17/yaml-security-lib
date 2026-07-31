@@ -1153,7 +1153,7 @@ export function dump(value, opts) {
  */
 export class YamlSecurity {
   /**
-   * @param {{maxAliasDepth?: number, maxNodes?: number, maxExpansion?: number, maxStringLength?: number, maxKeys?: number}} [opts]
+   * @param {{maxAliasDepth?: number, maxNodes?: number, maxExpansion?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number}} [opts]
    */
   constructor(opts) {
     this._overrides = opts ? { ...opts } : {};
@@ -1179,6 +1179,7 @@ export class YamlSecurity {
     if (ov.maxExpansion !== undefined) cfg.maxExpansion = ov.maxExpansion;
     if (ov.maxStringLength !== undefined) cfg.maxStringLength = ov.maxStringLength;
     if (ov.maxKeys !== undefined) cfg.maxKeys = ov.maxKeys;
+    if (ov.maxDepth !== undefined) cfg.maxDepth = ov.maxDepth;
     return cfg;
   }
 
