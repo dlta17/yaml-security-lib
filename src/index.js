@@ -936,9 +936,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           safeAssign(result, key, track(sub));
           let next = i + 1;
           while (next < ls.length) {
-            const nindent = getIndent(ls[next]);
             const t = ls[next].trim();
-            if (nindent >= indent + 2 && t !== '' && !t.startsWith('#')) { next++; continue; }
+            if (t === '' || t.startsWith('#')) { next++; continue; }
+            if (getIndent(ls[next]) >= indent + 2) { next++; continue; }
             break;
           }
           i = next - 1;

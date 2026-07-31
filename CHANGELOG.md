@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.4 (2026-07-31)
+
+### Bug Fixes
+- **`parseBlock` blank-line skip**: sub-block lines after blank/comment lines are now skipped correctly — `a:\n  \n  x: 1` parses as `{a:{x:1}}`, not `{a:{x:1},x:1}`
+
 ## 1.7.3 (2026-07-31)
 
 ### Bug Fixes
