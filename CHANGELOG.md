@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.2 (2026-07-31)
+
+### Security
+- **`maxDepth` limit**: default 50 — blocks deeply nested block mappings (bomb protection)
+- **`prototype` key guard**: `safeAssign` now blocks `prototype` keys in addition to `__proto__` and `constructor`
+- **Anchor pre-scan for flow types**: handles `[` / `{` in anchor declarations — catches Billion Laughs-style expansion during anchor registration
+- **Accurate node weight in `track()`**: uses `nodeWeight()` instead of fixed weight 1 — node limit is reached sooner for deeply nested/expanded structures
+- **Double-tracking removed in `parseInlineFlow`**: elements tracked once, not twice — corrects node counting
+
 ## 1.7.1 (2026-07-31)
 
 ### Documentation
