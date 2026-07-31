@@ -38,7 +38,10 @@ parser.parse("x: 1\nx: 2")
 // → { ok: false, error: 'YAML at line 2: Duplicate key: "x"' }
 
 // Anchor bomb → caught safely
-parser.parse("&a *a")  // self-reference
+parser.parse("&a *a")  // self-reference (circular alias)
+// → { ok: false, error: 'YAML: circular alias detected — "a"' }
+
+parser.parse("&a 1\n&b *a\n&c *b\n&d *c\n&e *d\n&f *e\n&g *f\n&h *g\n&i *h\n&j *i\n&k *j\n&l *k\nkey: *l")  // 11-deep chain
 // → { ok: false, error: 'YAML: alias depth exceeds limit (10)' }
 ```
 
@@ -49,10 +52,12 @@ parser.parse("&a *a")  // self-reference
 | Option | Default | Description |
 |--------|---------|-------------|
 | `maxAliasDepth` | `10` | Max anchor indirection depth |
+| `maxDepth` | `50` | Max nesting depth in block mappings |
 | `maxNodes` | `10000` | Max parsed nodes before abort |
 | `maxExpansion` | `100000` | Max expansion factor (Billion Laughs) |
 | `maxStringLength` | `0` (unlimited) | Max string length in parsed output. Set to e.g. `10000` to prevent overly long strings. |
 | `maxKeys` | `0` (unlimited) | Max keys per mapping (block + inline). Set to e.g. `1000` to prevent mapping bombs. |
+| `maxInputBytes` | `1048576` (1MB) | Max input size in bytes (set via `maxInputMB` too) |
 
 ### `parse(str)` → `{ ok, result } | { ok, error }`
 
@@ -99,9 +104,12 @@ import { YamlSecurity } from 'yaml-security-lib'
 // Tighten limits globally
 YamlSecurity.setLimits({
   maxNodes: 5000,
+  maxDepth: 20,
+  maxExpansion: 10000,
   maxStringLength: 50000,
   maxKeys: 500,
   maxAliasDepth: 5,
+  maxInputMB: 0.5,
 })
 
 const p = new YamlSecurity()

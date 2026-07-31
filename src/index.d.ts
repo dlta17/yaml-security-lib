@@ -8,6 +8,9 @@ export interface YamlSecurityOptions {
   maxAliasDepth?: number;
   maxNodes?: number;
   maxExpansion?: number;
+  maxStringLength?: number;
+  maxKeys?: number;
+  maxDepth?: number;
 }
 
 export interface SetLimitsOptions {
@@ -15,6 +18,9 @@ export interface SetLimitsOptions {
   maxNodes?: number;
   maxAlias?: number;
   maxExpansion?: number;
+  maxStringLength?: number;
+  maxKeys?: number;
+  maxDepth?: number;
   maxInputMB?: number;
   maxInputBytes?: number;
 }
