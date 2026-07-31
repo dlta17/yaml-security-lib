@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.5 (2026-07-31)
+
+### Documentation
+- **README**: complete options table with `maxDepth`, `maxInputBytes`/`maxInputMB`
+- **README**: fix anchor bomb example (11-chain, verified output)
+- **TypeScript defs**: add `maxDepth`, `maxStringLength`, `maxKeys` to `YamlSecurityOptions` and `SetLimitsOptions`
+
 ## 1.7.4 (2026-07-31)
 
 ### Bug Fixes
