@@ -14,6 +14,7 @@ const DEFAULTS = {
   maxInputBytes: 1_048_576,  // 1MB
   maxStringLength: 0,         // 0 = unlimited
   maxKeys: 0,                 // 0 = unlimited
+  maxDepth: 50,               // max nesting depth in block mappings
 };
 
 let _baseCfg = { ...DEFAULTS };
@@ -21,7 +22,7 @@ let _baseCfg = { ...DEFAULTS };
 /**
  * Globally adjust parser limits for all instances.
  * Call with no arguments (or `{}`) to reset to defaults.
- * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number}} [opts]
+ * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number}} [opts]
  */
 export function setLimits(opts) {
   if (!opts || Object.keys(opts).length === 0) { _baseCfg = { ...DEFAULTS }; return; }
@@ -33,7 +34,7 @@ export function setLimits(opts) {
       _baseCfg[key] = v;
     }
   }
-  for (const key of ['maxStringLength', 'maxKeys']) {
+  for (const key of ['maxStringLength', 'maxKeys', 'maxDepth']) {
     if (opts[key] !== undefined) {
       const v = opts[key];
       if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || !Number.isInteger(v))
@@ -70,7 +71,7 @@ export class YAMLException extends Error {
 // ── Prototype Pollution Guard ────────────────────────────
 
 function safeAssign(obj, key, value) {
-  if (key === '__proto__' || key === 'constructor')
+  if (key === '__proto__' || key === 'constructor' || key === 'prototype')
     throw new YAMLException('Security: cannot set key "' + key + '" — prototype pollution blocked');
   obj[key] = value;
 }
@@ -294,6 +295,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
 
   const state = _state || {
     produced: 0,
+    expanded: 0,
     aliasHits: 0,
     anchors: {},
     anchorDepths: {},
@@ -356,7 +358,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       return node;
     }
     if (weight === undefined) {
-      weight = nodeWeights.has(node) ? nodeWeights.get(node) : 1;
+      weight = nodeWeight(node);
     }
     state.produced += weight;
     nodeWeights.set(node, weight);
@@ -523,7 +525,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         }
         if (c === ',' || c === ' ') { i++; continue; }
         const r = parseInlineFlow(s.slice(i), _flowDepth + 1, _line);
-        items.push(track(r.value));
+        items.push(r.value);
         i += r.endPos;
       }
       const w = items.reduce((s, item) => s + nodeWeight(item), 1);
@@ -593,7 +595,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           safeAssign(obj, key, track(resolveAlias(aname)));
           i += val.length;
         } else {
-          safeAssign(obj, key, track(val));
+          safeAssign(obj, key, val);
           i += r.endPos;
         }
       }
@@ -703,6 +705,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         const srcAnchor = rest.slice(1).trim();
         const val = track(resolveAlias(srcAnchor));
         setAnchor(aname, val, srcAnchor);
+      } else if (rest.startsWith('[') || rest.startsWith('{')) {
+        const flowResult = parseInlineFlow(rest);
+        setAnchor(aname, flowResult.value !== undefined ? flowResult.value : track(parseScalar(rest)));
       } else if (rest.includes(':')) {
         const indent = getIndent(line);
         const dummy = rest + '\n' + contentLines.slice(i + 1)
@@ -718,7 +723,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   }
   _anchoring = false;
 
-  function parseBlock(startIdx, baseIndent, sourceLines) {
+  function parseBlock(startIdx, baseIndent, sourceLines, blockDepth) {
+    if (blockDepth === undefined) blockDepth = 0;
+    if (cfg.maxDepth > 0 && blockDepth > cfg.maxDepth)
+      throw err('nesting depth exceeds limit (' + cfg.maxDepth + ')');
     const ls = sourceLines || contentLines;
     const result = {};
     const seenKeys = new Set();
@@ -882,7 +890,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           const aname = anchorMatch[1];
           const rest = anchorMatch[2].trim();
           if (rest === '' && i + 1 < ls.length && getIndent(ls[i + 1]) > indent) {
-            const sub = parseBlock(i + 1, indent + 2, ls);
+            const sub = parseBlock(i + 1, indent + 2, ls, blockDepth + 1);
             setAnchor(aname, track(sub));
             addKey(key);
             safeAssign(result, key, track(sub));
@@ -924,7 +932,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
             i++;
             continue;
           }
-          const sub = parseBlock(i + 1, indent + 2, ls);
+          const sub = parseBlock(i + 1, indent + 2, ls, blockDepth + 1);
           addKey(key);
           safeAssign(result, key, track(sub));
           let next = i + 1;
