@@ -59,6 +59,8 @@ parser.parse("&a 1\n&b *a\n&c *b\n&d *c\n&e *d\n&f *e\n&g *f\n&h *g\n&i *h\n&j *
 | `maxKeys` | `0` (unlimited) | Max keys per mapping (block + inline). Set to e.g. `1000` to prevent mapping bombs. |
 | `maxInputBytes` | `1048576` (1MB) | Max input size in bytes (set via `maxInputMB` too) |
 
+> **Note on limits**: all limits use strict `>` semantics — a value equal to the limit is allowed, anything larger is blocked. E.g. `maxStringLength: 1000000` allows a 1,000,000-char string but blocks 1,000,001+. To block a specific size, set the limit one lower.
+
 ### `parse(str)` → `{ ok, result } | { ok, error }`
 
 Parses a YAML string. Always returns an object — never throws.
