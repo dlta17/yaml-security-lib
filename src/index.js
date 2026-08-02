@@ -1246,6 +1246,1177 @@ export class YamlSecurity {
     if (!r.ok) return r;
     return { ok: true, result: JSON.stringify(r.result, null, 2) };
   }
+
+  /**
+   * Create a SAX-style streaming YAML parser bound to this instance's schema.
+   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable'}} [opts]
+   * @returns {StreamParser}
+   */
+  createStream(opts) {
+    return createStream(Object.assign({}, opts, { schema: this._schema }));
+  }
+
+  /**
+   * Stream-parse YAML documents (single or multi-doc). Accepts a string or
+   * any (async) iterable of chunks and yields each document as it completes.
+   * @param {string|Iterable<string>|AsyncIterable<string>} input
+   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable'}} [opts]
+   * @yields {*}
+   */
+  parseStream(input, opts) {
+    return parseStream(input, Object.assign({}, opts, { schema: this._schema }));
+  }
+}
+
+// ── Streaming Parser (SAX-style events) ───────────────────
+
+const STREAM_EVENT_TYPES = Object.freeze([
+  'documentStart', 'mappingStart', 'sequenceStart', 'key', 'scalar',
+  'mappingEnd', 'sequenceEnd', 'documentEnd',
+]);
+
+function findKeySepTop(str, start) {
+  for (let i = start || 0; i < str.length; i++) {
+    if (str[i] === ':') {
+      if (i + 1 >= str.length || str[i + 1] === ' ' || str[i + 1] === '\t' || str[i + 1] === '}' || str[i + 1] === ']')
+        return i;
+    }
+  }
+  return -1;
+}
+
+const DEFAULT_TAG_MAP = { '!': '!', '!!': 'tag:yaml.org,2002:' };
+
+function expandTagTop(rawTag, tagMap) {
+  for (const handle of Object.keys(tagMap)) {
+    if (rawTag.startsWith(handle)) {
+      const suffix = rawTag.slice(handle.length);
+      if (suffix.length > 0) return tagMap[handle] + suffix;
+    }
+  }
+  return rawTag;
+}
+
+function resolveScalarTop(s, schema, tagMap) {
+  const trimmed = s.trim();
+  const tagMatch = trimmed.match(/^(![^\s]+)\s+/);
+  if (tagMatch) {
+    const rawTag = tagMatch[1];
+    const tagVal = trimmed.slice(tagMatch[0].length);
+    let fullTag;
+    if (rawTag.startsWith('!!')) {
+      const expanded = expandTagTop(rawTag, tagMap);
+      fullTag = expanded !== rawTag ? expanded : 'tag:yaml.org,2002:' + rawTag.slice(2);
+    } else {
+      fullTag = expandTagTop(rawTag, tagMap);
+    }
+    const type = schema._explicit[fullTag];
+    if (type) return type.construct(tagVal);
+    if (!rawTag.startsWith('!!')) return trimmed;
+  }
+  let val = trimmed;
+  if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) return unescapeYaml(val.slice(1, -1));
+  if (val.startsWith("'") && val.endsWith("'") && val.length >= 2) return val.slice(1, -1);
+  for (const type of schema._implicit) {
+    if (type.resolve && type.resolve(val)) return type.construct(val);
+  }
+  return val;
+}
+
+class StreamParser {
+  constructor(opts = {}) {
+    const limitKeys = ['maxNodes', 'maxAlias', 'maxAliasDepth', 'maxExpansion', 'maxInputMB', 'maxInputBytes', 'maxStringLength', 'maxKeys', 'maxDepth'];
+    const cfg = getBaseConfig();
+    for (const k of limitKeys) if (opts[k] !== undefined) cfg[k] = opts[k];
+    if (opts.maxInputMB !== undefined) cfg.maxInputBytes = Math.round(opts.maxInputMB * 1048576);
+    this.cfg = cfg;
+    this.schema = opts.schema instanceof Schema ? opts.schema : DEFAULT_SCHEMA;
+    this.anchorMode = opts.anchors === 'disable' ? 'disable' : 'buffer';
+    this.buffered = this.anchorMode === 'buffer';
+
+    this.buffer = '';
+    this.bytes = 0;
+    this.lineNo = 0;
+    this.ended = false;
+    this.error = null;
+    this.handlers = {};
+
+    this.stack = [];
+    this.docStarted = false;
+    this.docClosed = false;
+    this.root = undefined;
+    this.rootMode = undefined;
+    this._rootScalarLines = null;
+    this._topFlow = null;
+
+    this.anchors = new Map();
+    this.anchorDepths = new Map();
+    this.anchorSources = new Map();
+    this.aliasHits = 0;
+    this.produced = 0;
+    this.tagMap = { ...DEFAULT_TAG_MAP };
+
+    this.pendingScalar = null;
+    this.pendingExplicitKey = null;
+    this.pendingBlock = null;
+  }
+
+  // ── Public API ──────────────────────────────────────────
+
+  on(type, cb) {
+    if (typeof cb !== 'function') return this;
+    (this.handlers[type] = this.handlers[type] || []).push(cb);
+    return this;
+  }
+
+  off(type, cb) {
+    const hs = this.handlers[type];
+    if (hs) {
+      const i = hs.indexOf(cb);
+      if (i >= 0) hs.splice(i, 1);
+    }
+    return this;
+  }
+
+  write(chunk) {
+    if (this.ended && this.error) throw this.error;
+    if (this.ended) throw new YAMLException('stream already ended');
+    try {
+      if (typeof chunk !== 'string') chunk = String(chunk);
+      this.bytes += byteLength(chunk);
+      if (this.cfg.maxInputBytes > 0 && this.bytes > this.cfg.maxInputBytes)
+        throw new YAMLException('input size exceeds limit (' + this.cfg.maxInputBytes + ' bytes)');
+      this.buffer += chunk;
+      let idx;
+      while ((idx = this.buffer.indexOf('\n')) >= 0) {
+        const line = this.buffer.slice(0, idx);
+        this.buffer = this.buffer.slice(idx + 1);
+        this._feedLine(line);
+      }
+    } catch (e) {
+      throw this._handleError(e);
+    }
+    return this;
+  }
+
+  end() {
+    if (this.ended) return this;
+    try {
+      if (this.pendingBlock) this._finishBlock();
+      if (this.buffer.length > 0) { this._feedLine(this.buffer); this.buffer = ''; }
+      if (this.docStarted && !this.docClosed) this._closeDocument();
+      if (!this.docStarted) {
+        this._emit('documentStart');
+        this.docStarted = true;
+        this.docClosed = false;
+        this._closeDocument();
+      }
+      this.ended = true;
+      this._emit('end');
+    } catch (e) {
+      throw this._handleError(e);
+    }
+    return this;
+  }
+
+  abort(err) {
+    if (this.ended) return;
+    throw this._handleError(err instanceof Error ? err : new YAMLException(String(err)));
+  }
+
+  async *[Symbol.asyncIterator]() {
+    const q = [];
+    let waker = null;
+    let closed = false;
+    const onEv = (ev) => {
+      if (waker) { const w = waker; waker = null; w(ev); }
+      else q.push(ev);
+    };
+    const onEnd = () => { closed = true; if (waker) { const w = waker; waker = null; w(null); } };
+    this.on('*', onEv);
+    this.on('end', onEnd);
+    try {
+      while (true) {
+        let ev;
+        if (q.length) {
+          ev = q.shift();
+        } else if (closed) {
+          if (this.error) throw this.error;
+          break;
+        } else {
+          ev = await new Promise((res) => { waker = res; });
+        }
+        if (ev === null || ev === undefined) break;
+        if (ev.type === 'end') break;
+        if (ev.type === 'error') throw ev.error;
+        yield ev;
+      }
+    } finally {
+      this.off('*', onEv);
+      this.off('end', onEnd);
+    }
+  }
+
+  // ── Event plumbing ──────────────────────────────────────
+
+  _emit(type, payload) {
+    const ev = payload === undefined ? { type } : { type, ...payload };
+    const hs = this.handlers[type];
+    if (hs) for (const cb of hs) cb(ev);
+    const ws = this.handlers['*'];
+    if (ws) for (const cb of ws) cb(ev);
+    if (type === 'documentEnd' && this.buffered) {
+      const dhs = this.handlers['document'];
+      if (dhs) {
+        const doc = this.root === undefined ? null : this.root;
+        for (const cb of dhs) cb(doc);
+      }
+    }
+  }
+
+  _handleError(e) {
+    if (this.error) return e;
+    this.error = e;
+    const hs = this.handlers['error'];
+    if (hs) for (const cb of hs) cb({ type: 'error', error: e });
+    this.ended = true;
+    this._emit('end');
+    return e;
+  }
+
+  _err(msg) {
+    return new YAMLException('YAML at line ' + this.lineNo + ': ' + msg);
+  }
+
+  _indentOf(line) {
+    let i = 0;
+    while (i < line.length && line[i] === ' ') i++;
+    if (i < line.length && line[i] === '\t')
+      throw this._err('Tab characters are not allowed for indentation in YAML 1.2');
+    return i;
+  }
+
+  _count() {
+    this.produced++;
+    if (this.cfg.maxNodes > 0 && this.produced > this.cfg.maxNodes)
+      throw this._err('nodes limit exceeded (possible bomb) — reached ' + this.produced);
+    if (this.cfg.maxExpansion > 0 && this.produced > this.cfg.maxExpansion)
+      throw this._err('expansion limit exceeded (possible bomb) — reached ' + this.produced);
+  }
+
+  _checkString(v) {
+    if (this.cfg.maxStringLength > 0 && typeof v === 'string' && v.length > this.cfg.maxStringLength)
+      throw this._err('string length exceeds limit (' + this.cfg.maxStringLength + ')');
+  }
+
+  // ── Line feeding ────────────────────────────────────────
+
+  _feedLine(line) {
+    this.lineNo++;
+    if (line.endsWith('\r')) line = line.slice(0, -1);
+
+    if (this.pendingBlock) { this._feedBlockLine(line); return; }
+
+    if (this.rootMode === 'flow' && this._topFlow !== null) {
+      this._topFlow += '\n' + line.trim();
+      if (this._flowBalanced(this._topFlow)) {
+        const t = this._topFlow; this._topFlow = null;
+        this._emitFlowRoot(t);
+      }
+      return;
+    }
+
+    const trimmed = line.trim();
+
+    if (this.rootMode === 'scalar' && this._rootScalarLines !== null) {
+      if (findKeySepTop(line, 0) >= 0) {
+        this.rootMode = 'block';
+        this._rootScalarLines = null;
+        this._handleContentLine(line);
+        return;
+      }
+      this._rootScalarLines.push(line);
+      return;
+    }
+
+    if (trimmed === '' || trimmed.startsWith('#')) return;
+
+    if (trimmed.startsWith('%')) {
+      if (trimmed.startsWith('%TAG')) {
+        const parts = trimmed.split(/\s+/);
+        if (parts.length >= 3) this.tagMap[parts[1]] = parts[2];
+      }
+      return;
+    }
+
+    if (trimmed === '...' || trimmed.startsWith('... ')) {
+      this._closeDocument();
+      return;
+    }
+
+    if (trimmed === '---' || trimmed.startsWith('--- ')) {
+      if (this.docStarted && !this.docClosed) this._closeDocument();
+      this._emit('documentStart');
+      this.docStarted = true;
+      this.docClosed = false;
+      if (trimmed.length > 4) {
+        const rest = trimmed.slice(4);
+        if (rest.trim() !== '' && !rest.trim().startsWith('#'))
+          this._handleContentLine(rest);
+      }
+      return;
+    }
+
+    if (!this.docStarted) { this._emit('documentStart'); this.docStarted = true; this.docClosed = false; }
+
+    this._handleContentLine(line);
+  }
+
+  _handleContentLine(line) {
+    const indent = this._indentOf(line);
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) return;
+
+    if (this.rootMode === undefined && this.stack.length === 0 && (trimmed.startsWith('[') || trimmed.startsWith('{'))) {
+      this.rootMode = 'flow';
+      this._topFlow = trimmed;
+      if (this._flowBalanced(trimmed)) { this._topFlow = null; this._emitFlowRoot(trimmed); }
+      return;
+    }
+    if (this.rootMode === 'flow') return;
+
+    if (this.pendingExplicitKey) {
+      const pk = this.pendingExplicitKey;
+      this.pendingExplicitKey = null;
+      if (trimmed.startsWith(':')) {
+        const valStr = trimmed.slice(1).trim();
+        if (valStr === '' || valStr.startsWith('#')) { pk.ctx.expectValue = true; return; }
+        this._handleValue(pk.ctx, valStr);
+        return;
+      }
+      this._emitScalar(pk.ctx, null, '');
+    }
+
+    if (this.pendingScalar) {
+      const pend = this.pendingScalar;
+      this.pendingScalar = null;
+      if (indent > pend.seqIndent) {
+        this._openSeqItemMapping(pend.seqCtx, pend.seqIndent, pend.raw, pend.colonIdx);
+      } else {
+        this._emitScalar(pend.seqCtx, pend.value, pend.raw);
+      }
+    }
+
+    while (this.stack.length) {
+      const top = this.stack[this.stack.length - 1];
+      if (top.indent > indent) this._closeTop();
+      else break;
+    }
+
+    const top = this.stack[this.stack.length - 1] || null;
+
+    if (top && top.plainValueLines) {
+      if (indent <= top.indent && this._parseMapKey(line, indent)) {
+        this._finishPlainValue(top);
+      } else {
+        top.plainValueLines.push(line);
+        return;
+      }
+    }
+
+    if (trimmed === '-' || trimmed.startsWith('- ')) {
+      this._handleSeqItem(indent, trimmed, top);
+      return;
+    }
+
+    const kp = this._parseMapKey(line, indent);
+    if (kp) {
+      this._handleMapKey(line, indent, top, kp);
+      return;
+    }
+
+    this._handleBareScalar(line, indent, trimmed, top);
+  }
+
+  // ── Block parsing ───────────────────────────────────────
+
+  _parseMapKey(line, indent) {
+    const afterIndent = line.slice(indent);
+    if (afterIndent === '?' || afterIndent.startsWith('? ')) {
+      const key = afterIndent.slice(afterIndent.startsWith('? ') ? 2 : 1).trim();
+      return { key, valStr: '', explicit: true, rawKey: key };
+    }
+    let colonIdx = -1;
+    let key;
+    if (afterIndent.startsWith('"')) {
+      let close = -1, pos = 1;
+      while (pos < afterIndent.length) {
+        if (afterIndent[pos] === '\\') { pos += 2; continue; }
+        if (afterIndent[pos] === '"') { close = pos; break; }
+        pos++;
+      }
+      if (close > 0) {
+        const ci = findKeySepTop(afterIndent, close);
+        if (ci >= 0) { colonIdx = indent + ci; key = unescapeYaml(afterIndent.slice(1, close)); }
+      }
+    } else if (afterIndent.startsWith("'")) {
+      let close = -1, pos = 1;
+      while (pos < afterIndent.length) {
+        if (afterIndent[pos] === "'" && pos + 1 < afterIndent.length && afterIndent[pos + 1] === "'") { pos += 2; continue; }
+        if (afterIndent[pos] === "'") { close = pos; break; }
+        pos++;
+      }
+      if (close > 0) {
+        const ci = findKeySepTop(afterIndent, close);
+        if (ci >= 0) { colonIdx = indent + ci; key = afterIndent.slice(1, close).replace(/''/g, "'"); }
+      }
+    }
+    if (colonIdx < 0) colonIdx = findKeySepTop(line, indent);
+    if (colonIdx < 0) return null;
+    const rawKey = line.slice(indent, colonIdx).trim();
+    if (key === undefined) key = rawKey;
+    const valStr = line.slice(colonIdx + 1).trim();
+    return { key, valStr, explicit: false, rawKey, colonIdx };
+  }
+
+  _handleMapKey(line, indent, top, kp) {
+    let mctx;
+    if (top && top.kind === 'map') {
+      if (indent > top.indent && top.expectValue) {
+        top.expectValue = false;
+        this._emit('mappingStart');
+        this._count();
+        mctx = this._openMap(indent);
+        mctx.anchor = top.valueAnchor;
+        top.valueAnchor = null;
+        this._emitMapKey(mctx, kp);
+        return;
+      }
+      if (top.expectValue && top.pendingKey !== null) {
+        top.expectValue = false;
+        this._registerValueAnchor(top, null);
+        this._emit('scalar', { value: null, raw: '' });
+        this._count();
+        this._assignValue(top, null);
+      }
+      mctx = top;
+    } else if (top && top.kind === 'seq' && indent > top.indent) {
+      this._retractSeqInline(top);
+      this._emit('mappingStart');
+      this._count();
+      mctx = this._openMap(indent);
+      this._emitMapKey(mctx, kp);
+      return;
+    } else {
+      this._emit('mappingStart');
+      this._count();
+      mctx = this._openMap(indent);
+      if (this.rootMode === undefined) this.rootMode = 'block';
+    }
+    this._emitMapKey(mctx, kp);
+  }
+
+  _emitMapKey(mctx, kp) {
+    this._emit('key', { value: kp.key, raw: kp.rawKey !== undefined ? kp.rawKey : kp.key });
+    this._count();
+    this._checkString(kp.key);
+    this._addMapKey(mctx, kp.key);
+    mctx.pendingKey = kp.key;
+    if (kp.explicit) {
+      this.pendingExplicitKey = { ctx: mctx };
+    } else {
+      this._handleValue(mctx, kp.valStr);
+    }
+  }
+
+  _addMapKey(ctx, key) {
+    if (this.cfg.maxKeys > 0 && ctx.keys.size >= this.cfg.maxKeys)
+      throw this._err('mapping keys limit exceeded (' + this.cfg.maxKeys + ')');
+    if (key === '<<') {
+      ctx.mergeOverride = new Set(ctx.keys);
+    } else if (ctx.keys.has(key)) {
+      throw this._err('Duplicate key: "' + key + '"');
+    }
+    ctx.keys.add(key);
+  }
+
+  _handleSeqItem(indent, trimmed, top) {
+    let seqCtx;
+    if (top && top.kind === 'map' && top.expectValue && indent > top.indent) {
+      top.expectValue = false;
+      this._emit('sequenceStart');
+      this._count();
+      seqCtx = this._openSeq(indent);
+      seqCtx.valueAnchor = top.valueAnchor;
+      top.valueAnchor = null;
+    } else if (top && top.kind === 'seq' && top.indent === indent) {
+      seqCtx = top;
+    } else {
+      this._retractSeqInline(top);
+      this._emit('sequenceStart');
+      this._count();
+      seqCtx = this._openSeq(indent);
+    }
+    if (this.rootMode === undefined) this.rootMode = 'block';
+
+    if (seqCtx.pendingItem && indent === seqCtx.indent) {
+      seqCtx.pendingItem = false;
+    }
+
+    const item = trimmed.slice(2);
+    if (item.trim() === '') {
+      seqCtx.pendingItem = true;
+      return;
+    }
+    if (item.startsWith('[') || item.startsWith('{')) {
+      this._emitFlow(seqCtx, item, null);
+      return;
+    }
+    if (item.startsWith('&') || item.startsWith('*')) {
+      this._handleValue(seqCtx, item);
+      return;
+    }
+    const ci = findKeySepTop(item);
+    if (ci >= 0 && item[ci + 1] === ' ') {
+      this._openSeqItemMapping(seqCtx, indent, item, ci);
+      return;
+    }
+    if (ci >= 0 && item[ci + 1] === undefined) {
+      const key = item.slice(0, ci).trim();
+      this.pendingScalar = { seqCtx, seqIndent: indent, value: key + ':', raw: item, colonIdx: ci };
+      return;
+    }
+    const v = resolveScalarTop(item, this.schema, this.tagMap);
+    this._emitScalar(seqCtx, v, item);
+  }
+
+  _openSeqItemMapping(seqCtx, indent, item, ci) {
+    this._emit('mappingStart');
+    this._count();
+    const vm = this._openMap(indent + 2);
+    if (this.buffered) seqCtx.pendingItem = true;
+    const kp = this._parseMapKey(item, 0);
+    const key = kp ? kp.key : item.slice(0, ci).trim();
+    const valStr = kp ? kp.valStr : item.slice(ci + 1).trim();
+    this._emit('key', { value: key, raw: key });
+    this._count();
+    this._checkString(key);
+    this._addMapKey(vm, key);
+    vm.pendingKey = key;
+    if (kp && kp.explicit) {
+      this.pendingExplicitKey = { ctx: vm };
+    } else {
+      this._handleValue(vm, valStr);
+    }
+  }
+
+  _handleBareScalar(line, indent, trimmed, top) {
+    if (top === null && this.stack.length === 0) {
+      if (this.rootMode === undefined) {
+        const raw = line.slice(indent);
+        if (raw === '-' || raw.startsWith('- ') || raw.startsWith('? ') ||
+            /^[&*!]/.test(raw) || /^[|>]/.test(raw)) {
+          this.rootMode = 'block';
+          if (raw === '-' || raw.startsWith('- ') || raw.startsWith('? ')) this._handleContentLine(line);
+          return;
+        }
+        this.rootMode = 'scalar';
+        this._rootScalarLines = [line];
+      }
+      return;
+    }
+    if (top && top.kind === 'map' && top.expectValue && indent > top.indent) {
+      top.expectValue = false;
+      top.plainValueLines = [line];
+      return;
+    }
+    if (top && top.kind === 'seq' && indent > top.indent) {
+      const v = resolveScalarTop(trimmed, this.schema, this.tagMap);
+      if (this.buffered && top.lastInlineIndex >= 0) {
+        top.node[top.lastInlineIndex] = v;
+        top.lastInlineIndex = -1;
+        this._count();
+        this._checkString(v);
+        this._emit('scalar', { value: v, raw: trimmed });
+        return;
+      }
+      this._emitScalar(top, v, trimmed);
+      return;
+    }
+  }
+
+  // ── Contexts / stack ────────────────────────────────────
+
+  _openMap(indent) {
+    if (this.cfg.maxDepth > 0 && this.stack.length > this.cfg.maxDepth)
+      throw this._err('nesting depth exceeds limit (' + this.cfg.maxDepth + ')');
+    const ctx = {
+      kind: 'map', indent, keys: new Set(), pendingKey: null, expectValue: false,
+      valueAnchor: null, anchor: null, mergeOverride: null, plainValueLines: null,
+      node: this.buffered ? {} : null,
+    };
+    this.stack.push(ctx);
+    return ctx;
+  }
+
+  _openSeq(indent) {
+    if (this.cfg.maxDepth > 0 && this.stack.length > this.cfg.maxDepth)
+      throw this._err('nesting depth exceeds limit (' + this.cfg.maxDepth + ')');
+    const ctx = {
+      kind: 'seq', indent, pendingItem: false, valueAnchor: null, anchor: null,
+      lastInlineIndex: -1, replaceInline: -1,
+      node: this.buffered ? [] : null,
+    };
+    this.stack.push(ctx);
+    return ctx;
+  }
+
+  _closeTop() {
+    const ctx = this.stack.pop();
+    if (ctx.kind === 'map') {
+      this._finishPlainValue(ctx);
+      if (ctx.pendingKey !== null) {
+        this._registerValueAnchor(ctx, null);
+        this._emit('scalar', { value: null, raw: '' });
+        this._count();
+        this._assignValue(ctx, null);
+      }
+      this._finalizeMap(ctx);
+      if (ctx.anchor) this._registerAnchor(ctx.anchor, ctx.node);
+      this._emit('mappingEnd');
+      this._attachToParent(ctx);
+    } else {
+      if (ctx.pendingItem) {
+        ctx.pendingItem = false;
+      }
+      if (ctx.anchor) this._registerAnchor(ctx.anchor, ctx.node);
+      this._emit('sequenceEnd');
+      this._attachToParent(ctx);
+    }
+  }
+
+  _closeAll() {
+    if (this.pendingExplicitKey) {
+      const pk = this.pendingExplicitKey;
+      this.pendingExplicitKey = null;
+      this._emitScalar(pk.ctx, null, '');
+    }
+    if (this.pendingScalar) {
+      const pend = this.pendingScalar;
+      this.pendingScalar = null;
+      this._emitScalar(pend.seqCtx, pend.value, pend.raw);
+    }
+    while (this.stack.length) this._closeTop();
+  }
+
+  _closeDocument() {
+    if (!this.docStarted || this.docClosed) return;
+    if (this.pendingBlock) this._finishBlock();
+    if (this.rootMode === 'scalar') {
+      const lines = this._rootScalarLines || [];
+      const text = this._foldScalarLines(lines);
+      const v = resolveScalarTop(text, this.schema, this.tagMap);
+      this._checkString(v);
+      this._count();
+      this.root = v;
+      this._emit('scalar', { value: v, raw: lines.join('\n') });
+    } else if (this.rootMode === 'flow') {
+      if (this._topFlow !== null) {
+        const t = this._topFlow; this._topFlow = null;
+        this._emitFlowRoot(t);
+      }
+    }
+    this._closeAll();
+    this._emit('documentEnd');
+    this.docClosed = true;
+  }
+
+  _finishPlainValue(ctx) {
+    if (!ctx.plainValueLines) return;
+    const lines = ctx.plainValueLines;
+    ctx.plainValueLines = null;
+    const text = this._foldScalarLines(lines);
+    const v = resolveScalarTop(text, this.schema, this.tagMap);
+    this._registerValueAnchor(ctx, v);
+    this._emitScalar(ctx, v, text);
+  }
+
+  _assignValue(ctx, value) {
+    if (!this.buffered) return;
+    if (ctx.kind === 'map') {
+      if (ctx.pendingKey !== null) {
+        if (ctx.pendingKey === '<<') ctx.node['<<'] = value;
+        else safeAssign(ctx.node, ctx.pendingKey, value);
+        ctx.pendingKey = null;
+      }
+    } else if (ctx.kind === 'seq') {
+      ctx.node.push(value);
+      ctx.pendingItem = false;
+      ctx.lastInlineIndex = ctx.node.length - 1;
+    }
+  }
+
+  _retractSeqInline(seqCtx) {
+    if (!seqCtx || seqCtx.kind !== 'seq' || !this.buffered || seqCtx.lastInlineIndex < 0) return;
+    seqCtx.node.pop();
+    seqCtx.replaceInline = seqCtx.lastInlineIndex;
+    seqCtx.lastInlineIndex = -1;
+  }
+
+  _attachToParent(ctx) {
+    if (!this.buffered) return;
+    const top = this.stack[this.stack.length - 1];
+    if (!top) { this.root = ctx.node; return; }
+    if (top.kind === 'map') {
+      if (top.pendingKey !== null) {
+        safeAssign(top.node, top.pendingKey, ctx.node);
+        top.pendingKey = null;
+      }
+    } else if (top.kind === 'seq') {
+      if (top.pendingItem) {
+        top.node.push(ctx.node);
+        top.pendingItem = false;
+      } else if (top.replaceInline >= 0) {
+        top.node[top.replaceInline] = ctx.node;
+        top.replaceInline = -1;
+      } else if (ctx.indent > top.indent) {
+        top.node.push(ctx.node);
+      }
+    }
+  }
+
+  _finalizeMap(ctx) {
+    if (!this.buffered) return;
+    const v = ctx.node;
+    if (v['<<'] !== undefined) {
+      const merged = {};
+      const sources = Array.isArray(v['<<']) ? v['<<'] : [v['<<']];
+      for (const src of sources) {
+        if (src && typeof src === 'object' && !Array.isArray(src)) {
+          for (const sk of Object.keys(src)) {
+            if (!(sk in merged) && sk !== '<<') {
+              if (ctx.mergeOverride && ctx.mergeOverride.has(sk))
+                throw new YAMLException('Merge key << overwrites existing key "' + sk + '"');
+              safeAssign(merged, sk, src[sk]);
+            }
+          }
+        }
+      }
+      for (const k of Object.keys(v)) {
+        if (k !== '<<') safeAssign(merged, k, v[k]);
+      }
+      ctx.node = merged;
+    }
+  }
+
+  // ── Values: block scalar, flow, anchors, aliases ─────────
+
+  _handleValue(ctx, valStr) {
+    let anchor = null;
+    let rest = valStr.trim();
+    const am = rest.match(/^&([^ \t,\[\]{}]+)\s*(.*)/);
+    if (am) { anchor = am[1]; rest = am[2].trim(); }
+    if (this.anchorMode === 'disable' && anchor) throw this._err('anchors are disabled in streaming mode');
+    if (anchor && rest.startsWith('*')) {
+      const v = this._resolveAlias(rest.slice(1).trim());
+      this._emitScalar(ctx, v, valStr, anchor, rest.slice(1).trim());
+      return;
+    }
+    if (rest === '' || rest.startsWith('#')) {
+      ctx.expectValue = true;
+      ctx.valueAnchor = anchor;
+      return;
+    }
+    if (rest.startsWith('*')) {
+      const name = rest.slice(1).split(/[ ,}\]]/)[0];
+      const v = this._resolveAlias(name);
+      this._emitScalar(ctx, v, valStr, anchor);
+      return;
+    }
+    const valForBlock = rest.replace(/^![^\s]+\s*/, '');
+    const blockMatch = valForBlock.match(/^(\||>)(\d*)([\-+]?)$/);
+    if (blockMatch && valForBlock.trim() === blockMatch[0]) {
+      const full = blockMatch[0];
+      this.pendingBlock = {
+        ctx, indent: ctx.indent, style: full[0],
+        chomp: full.endsWith('-') ? 'strip' : full.endsWith('+') ? 'keep' : 'clip',
+        lines: [], contentIndent: null, anchor,
+      };
+      return;
+    }
+    if (rest.startsWith('[') || rest.startsWith('{')) {
+      this._emitFlow(ctx, rest, anchor);
+      return;
+    }
+    const v = resolveScalarTop(rest, this.schema, this.tagMap);
+    this._emitScalar(ctx, v, valStr, anchor);
+  }
+
+  _registerValueAnchor(ctx, value) {
+    if (ctx.valueAnchor) {
+      this._registerAnchor(ctx.valueAnchor, value);
+      ctx.valueAnchor = null;
+    }
+  }
+
+  _emitScalar(ctx, value, raw, anchor, srcAnchor) {
+    if (anchor) this._registerAnchor(anchor, value, srcAnchor);
+    this._count();
+    this._checkString(value);
+    this._emit('scalar', { value, raw });
+    this._assignValue(ctx, value);
+  }
+
+  _registerAnchor(name, value, sourceAnchor) {
+    if (this.anchorMode === 'disable') throw this._err('anchors are disabled in streaming mode');
+    let depth = 0;
+    if (sourceAnchor) {
+      const sd = this.anchorDepths.get(sourceAnchor);
+      depth = (sd === undefined ? 0 : sd) + 1;
+      let cur = sourceAnchor;
+      while (cur) {
+        if (cur === name)
+          throw new YAMLException('YAML: circular alias detected — "' + name + '"');
+        cur = this.anchorSources.get(cur);
+      }
+    }
+    if (depth > this.cfg.maxAliasDepth)
+      throw new YAMLException('YAML: alias depth exceeds limit (' + this.cfg.maxAliasDepth + '), possible anchor bomb');
+    this.anchors.set(name, value);
+    this.anchorDepths.set(name, depth);
+    if (sourceAnchor) this.anchorSources.set(name, sourceAnchor);
+  }
+
+  _resolveAlias(name) {
+    if (this.anchorMode === 'disable') throw this._err('aliases are disabled in streaming mode');
+    if (++this.aliasHits > this.cfg.maxAlias)
+      throw this._err('YAML: alias expansion limit exceeded (bomb)');
+    const v = this.anchors.get(name);
+    if (v === undefined) return name;
+    return v;
+  }
+
+  _feedBlockLine(line) {
+    const pb = this.pendingBlock;
+    const indent = this._indentOf(line);
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) { pb.lines.push(''); return; }
+    if (indent <= pb.indent) {
+      this._finishBlock();
+      this._handleContentLine(line);
+      return;
+    }
+    if (pb.contentIndent === null) pb.contentIndent = indent;
+    pb.lines.push(line.slice(pb.contentIndent));
+  }
+
+  _finishBlock() {
+    const pb = this.pendingBlock;
+    this.pendingBlock = null;
+    const { style, chomp, lines } = pb;
+    let text;
+    if (style === '|') {
+      text = lines.join('\n');
+      if (chomp === 'keep') text = text + '\n';
+      else if (chomp !== 'strip') text = text + '\n';
+      text = chomp === 'strip' ? text.replace(/\n+$/, '') : text;
+    } else {
+      const folded = [];
+      let li = 0;
+      while (li < lines.length) {
+        if (lines[li] === '') { folded.push(''); li++; }
+        else {
+          let accum = lines[li];
+          li++;
+          while (li < lines.length && lines[li] !== '') { accum += ' ' + lines[li]; li++; }
+          folded.push(accum);
+        }
+      }
+      text = folded.join('\n');
+      if (chomp === 'keep') text = text.replace(/\n*$/, '') + '\n';
+      else if (chomp === 'strip') text = text.replace(/\n+$/, '');
+      else text = text.replace(/\n*$/, '\n');
+    }
+    this._checkString(text);
+    this._count();
+    this._emit('scalar', { value: text, raw: text });
+    if (pb.anchor) this._registerAnchor(pb.anchor, text);
+    this._assignValue(pb.ctx, text);
+  }
+
+  // ── Flow parsing ────────────────────────────────────────
+
+  _flowBalanced(str) {
+    let depth = 0;
+    let inS = false, inD = false, esc = false;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (inD) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inD = false;
+        continue;
+      }
+      if (inS) {
+        if (ch === "'" && str[i + 1] === "'") { i++; continue; }
+        if (ch === "'") inS = false;
+        continue;
+      }
+      if (ch === '"') { inD = true; continue; }
+      if (ch === "'") { inS = true; continue; }
+      if (ch === '[' || ch === '{') depth++;
+      else if (ch === ']' || ch === '}') { depth--; if (depth < 0) return false; }
+    }
+    return depth === 0 && !inS && !inD;
+  }
+
+  _emitFlow(ctx, str, anchor) {
+    const r = this._parseFlowEmitting(str, 0);
+    if (anchor) this._registerAnchor(anchor, r.value);
+    this._assignValue(ctx, r.value);
+  }
+
+  _emitFlowRoot(str) {
+    const r = this._parseFlowEmitting(str, 0);
+    this.root = r.value;
+  }
+
+  _flowScalar(val, raw) {
+    this._count();
+    this._checkString(val);
+    this._emit('scalar', { value: val, raw });
+    return val;
+  }
+
+  _parseFlowEmitting(s, _depth) {
+    if (_depth === undefined) _depth = 0;
+    if (_depth > 100) throw this._err('flow nesting too deep (>100)');
+    s = s.trim();
+    if (s.startsWith('[')) {
+      const items = [];
+      let i = 1;
+      this._emit('sequenceStart');
+      this._count();
+      while (i < s.length) {
+        const c = s[i];
+        if (c === ']') {
+          this._emit('sequenceEnd');
+          return { value: items, endPos: i + 1 };
+        }
+        if (c === ',' || c === ' ') { i++; continue; }
+        const r = this._parseFlowEmitting(s.slice(i), _depth + 1);
+        items.push(r.value);
+        i += r.endPos;
+      }
+      this._emit('sequenceEnd');
+      return { value: items, endPos: s.length };
+    }
+    if (s.startsWith('{')) {
+      const obj = {};
+      const seen = new Set();
+      let i = 1;
+      this._emit('mappingStart');
+      this._count();
+      while (i < s.length) {
+        const c = s[i];
+        if (c === '}') {
+          this._emit('mappingEnd');
+          return { value: obj, endPos: i + 1 };
+        }
+        if (c === ',' || c === ' ') { i++; continue; }
+        let key;
+        if (s[i] === '"' || s[i] === "'") {
+          const quote = s[i];
+          let close = -1, pos = i + 1;
+          if (quote === '"') {
+            while (pos < s.length) { if (s[pos] === '\\') { pos += 2; continue; } if (s[pos] === '"') { close = pos; break; } pos++; }
+          } else {
+            while (pos < s.length) { if (s[pos] === "'" && pos + 1 < s.length && s[pos + 1] === "'") { pos += 2; continue; } if (s[pos] === "'") { close = pos; break; } pos++; }
+          }
+          if (close < 0) { this._emit('mappingEnd'); return { value: obj, endPos: s.length }; }
+          key = s.slice(i + 1, close);
+          if (quote === '"') key = unescapeYaml(key);
+          i = close + 1;
+        } else {
+          let j = i;
+          while (j < s.length && s[j] !== ':' && s[j] !== ',' && s[j] !== '}') j++;
+          key = s.slice(i, j).trim();
+          i = j;
+        }
+        if (this.cfg.maxKeys > 0 && seen.size >= this.cfg.maxKeys)
+          throw this._err('inline mapping keys limit exceeded (' + this.cfg.maxKeys + ')');
+        if (seen.has(key)) throw this._err('Duplicate key: "' + key + '"');
+        seen.add(key);
+        while (i < s.length && (s[i] === ' ' || s[i] === ':')) i++;
+        this._emit('key', { value: key, raw: key });
+        this._count();
+        const r = this._parseFlowEmitting(s.slice(i), _depth + 1);
+        safeAssign(obj, key, r.value);
+        i += r.endPos;
+      }
+      this._emit('mappingEnd');
+      return { value: obj, endPos: s.length };
+    }
+    if (s.startsWith('&')) {
+      const nameEnd = s.slice(1).search(/[ \t\[{"'*,]/);
+      if (nameEnd < 0) {
+        const aname = s.slice(1);
+        if (this.anchorMode === 'disable') throw this._err('anchors are disabled in streaming mode');
+        this._registerAnchor(aname, null);
+        this._flowScalar(null, s);
+        return { value: null, endPos: s.length };
+      }
+      const aname = s.slice(1, 1 + nameEnd);
+      const afterName = s.slice(1 + nameEnd);
+      const rest = afterName.trim();
+      const wsLen = afterName.length - rest.length;
+      if (this.anchorMode === 'disable') throw this._err('anchors are disabled in streaming mode');
+      if (rest) {
+        const r = this._parseFlowEmitting(rest, _depth + 1);
+        this._registerAnchor(aname, r.value);
+        return { value: r.value, endPos: 1 + aname.length + wsLen + r.endPos };
+      }
+      this._registerAnchor(aname, null);
+      this._flowScalar(null, s);
+      return { value: null, endPos: 1 + aname.length + wsLen };
+    }
+    if (s.startsWith('*')) {
+      const aname = s.slice(1).split(/[ ,}\]]/)[0];
+      const v = this._resolveAlias(aname);
+      this._flowScalar(v, s);
+      return { value: v, endPos: aname.length + 1 };
+    }
+    const tagPrefix = s.match(/^(![^\s]+)\s+/);
+    if (tagPrefix) {
+      const rawTag = tagPrefix[1];
+      const rest = s.slice(tagPrefix[0].length);
+      const r = this._parseFlowEmitting(rest, _depth + 1);
+      let val = r.value;
+      let fullTag;
+      if (rawTag.startsWith('!!')) {
+        const expanded = expandTagTop(rawTag, this.tagMap);
+        fullTag = expanded !== rawTag ? expanded : 'tag:yaml.org,2002:' + rawTag.slice(2);
+      } else {
+        fullTag = expandTagTop(rawTag, this.tagMap);
+      }
+      const type = this.schema._explicit[fullTag];
+      if (!type) {
+        if (!rawTag.startsWith('!!')) {
+          const v = resolveScalarTop(s, this.schema, this.tagMap);
+          this._flowScalar(v, s);
+          return { value: v, endPos: s.length };
+        }
+      } else {
+        val = type.construct(String(val));
+      }
+      this._flowScalar(val, s);
+      return { value: val, endPos: tagPrefix[0].length + r.endPos };
+    }
+    if (s.startsWith('"')) {
+      let close = -1, pos = 1;
+      while (pos < s.length) { if (s[pos] === '\\') { pos += 2; continue; } if (s[pos] === '"') { close = pos; break; } pos++; }
+      if (close > 0) { const inner = s.slice(1, close); return { value: this._flowScalar(unescapeYaml(inner), s), endPos: close + 1 }; }
+    }
+    if (s.startsWith("'")) {
+      let close = -1, pos = 1;
+      while (pos < s.length) { if (s[pos] === "'" && pos + 1 < s.length && s[pos + 1] === "'") { pos += 2; continue; } if (s[pos] === "'") { close = pos; break; } pos++; }
+      if (close > 0) { const v = s.slice(1, close).replace(/''/g, "'"); return { value: this._flowScalar(v, s), endPos: close + 1 }; }
+    }
+    let end = s.search(/[,})\]]/);
+    if (end < 0) { const v = resolveScalarTop(s, this.schema, this.tagMap); return { value: this._flowScalar(v, s), endPos: s.length }; }
+    if (end === 0) { const v = resolveScalarTop(s, this.schema, this.tagMap); return { value: this._flowScalar(v, s), endPos: s.length }; }
+    let raw = s.slice(0, end);
+    if (raw.endsWith(' ')) raw = raw.trimEnd();
+    const v = resolveScalarTop(raw, this.schema, this.tagMap);
+    return { value: this._flowScalar(v, raw), endPos: end };
+  }
+
+  _foldScalarLines(lines) {
+    const folded = [];
+    let i = 0;
+    while (i < lines.length) {
+      if (lines[i].trim() === '') { folded.push(''); i++; }
+      else {
+        let accum = lines[i];
+        i++;
+        while (i < lines.length && (lines[i].trim() === '' || lines[i].startsWith(' '))) {
+          if (lines[i].trim() === '') { folded.push(accum); accum = ''; i++; }
+          else { accum += ' ' + lines[i].trim(); i++; }
+        }
+        folded.push(accum);
+      }
+    }
+    return folded.join('\n');
+  }
+}
+
+/**
+ * Create a SAX-style streaming YAML parser.
+ * Feed chunks with `.write(chunk)`, finish with `.end()`, consume events
+ * via `.on(type, cb)` or `for await`. Every event is `{ type, ... }`.
+ * Event types: documentStart, mappingStart, sequenceStart, key, scalar,
+ * mappingEnd, sequenceEnd, documentEnd, error, end.
+ * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', schema?: Schema}} [opts]
+ * @returns {StreamParser}
+ */
+export function createStream(opts = {}) {
+  return new StreamParser(opts);
+}
+
+/**
+ * Stream-parse YAML documents (single or multi-doc, `---`-separated).
+ * Accepts a string or any (async) iterable of string chunks. Yields each
+ * parsed document as it completes. Security limits are enforced while
+ * streaming, so a malicious document is rejected before the whole input
+ * is consumed.
+ * @param {string|Iterable<string>|AsyncIterable<string>} input
+ * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', schema?: Schema}} [opts]
+ * @yields {*} Parsed document
+ */
+export async function* parseStream(input, opts = {}) {
+  const parser = new StreamParser(opts);
+  const queue = [];
+  let waker = null;
+  let closed = false;
+  parser.on('document', (doc) => {
+    if (waker) { const w = waker; waker = null; w(doc); }
+    else queue.push(doc);
+  });
+  parser.on('end', () => {
+    closed = true;
+    if (waker) { const w = waker; waker = null; w(undefined); }
+  });
+
+  const drain = function* () { while (queue.length) yield queue.shift(); };
+
+  if (typeof input === 'string') {
+    parser.write(input);
+    parser.end();
+  } else {
+    for await (const chunk of input) {
+      parser.write(chunk);
+      yield* drain();
+    }
+    parser.end();
+  }
+  yield* drain();
+  if (parser.error) throw parser.error;
+  while (true) {
+    if (parser.error) throw parser.error;
+    if (queue.length) yield queue.shift();
+    else if (closed) break;
+    else await new Promise((res) => { waker = res; });
+  }
 }
 
 YamlSecurity.setLimits = setLimits;
+
+// ── Internal helpers shared with the streaming module ─────
+
+/** @internal */
+export function getBaseConfig() {
+  return { ..._baseCfg };
+}
+
+/** @internal */
+export { DEFAULT_SCHEMA, unescapeYaml, byteLength };

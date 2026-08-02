@@ -97,6 +97,15 @@ export class YamlSecurity {
   /** Parse YAML and return pretty-printed JSON string. */
   parseToJSON(yamlStr: string): YamlResult<string>;
 
+  /** Create a streaming parser bound to this instance's schema and limits. */
+  createStream(opts?: StreamOptions): StreamParser;
+
+  /** Stream-parse documents, yielding each as it completes. */
+  parseStream(
+    input: string | Iterable<string> | AsyncIterable<string>,
+    opts?: StreamOptions
+  ): AsyncGenerator<any, void, void>;
+
   /** Globally adjust parser limits. */
   static setLimits(opts?: Partial<SetLimitsOptions>): void;
 }
@@ -112,3 +121,73 @@ export function parseAll(yamlStr: string, opts?: ParseOptions): any[];
 
 /** Serialize a JS value to YAML. */
 export function dump(value: any, opts?: DumpOptions): string;
+
+/**
+ * Streaming parser options. All limits are enforced WHILE streaming,
+ * so a malicious document is rejected before the whole input is consumed.
+ */
+export interface StreamOptions extends Partial<SetLimitsOptions> {
+  /**
+   * Anchor handling strategy:
+   * - `'buffer'` (default): anchors/aliases are supported; anchor values are
+   *   buffered in memory until they resolve.
+   * - `'disable'`: `&`/`*` are rejected outright for true zero-buffering.
+   */
+  anchors?: 'buffer' | 'disable';
+  schema?: Schema;
+}
+
+/** SAX-style event emitted by a `StreamParser`. */
+export type StreamEventType =
+  | 'documentStart'
+  | 'mappingStart'
+  | 'sequenceStart'
+  | 'key'
+  | 'scalar'
+  | 'mappingEnd'
+  | 'sequenceEnd'
+  | 'documentEnd'
+  | 'error'
+  | 'end';
+
+export interface StreamEvent {
+  type: StreamEventType;
+  /** Present on `key` and `scalar` events. */
+  value?: any;
+  /** Present on `key` and `scalar` events: the raw source text. */
+  raw?: string;
+  /** Present on `error` events. */
+  error?: Error;
+}
+
+export type StreamListener = (ev: StreamEvent) => void;
+
+/**
+ * Incremental, push-based SAX parser. Feed it chunks with `write()`, listen
+ * to events via `on()`, and finish with `end()`. The convenience `document`
+ * event fires with each fully parsed document (works for single- and
+ * multi-doc streams). Also async-iterable: `for await (const ev of parser)`.
+ */
+export class StreamParser {
+  constructor(opts?: StreamOptions);
+  on(type: string | '*', cb: StreamListener): this;
+  off(type: string, cb: StreamListener): this;
+  write(chunk: string | unknown): this;
+  end(): this;
+  abort(err?: Error | string): never;
+  [Symbol.asyncIterator](): AsyncIterator<StreamEvent>;
+}
+
+/** Create a streaming YAML parser. */
+export function createStream(opts?: StreamOptions): StreamParser;
+
+/**
+ * Stream-parse YAML (single- or multi-document, `---`-separated).
+ * Accepts a string or any (async) iterable of string chunks, and yields each
+ * parsed document as it completes.
+ */
+export function parseStream(
+  input: string | Iterable<string> | AsyncIterable<string>,
+  opts?: StreamOptions
+): AsyncGenerator<any, void, void>;
+

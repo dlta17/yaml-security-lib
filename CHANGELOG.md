@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.8.0 (2026-08-03)
+
+### New Feature: Streaming Parser
+- **`StreamParser`** (SAX-style): incremental push parser with `write()` / `end()` / `abort()` and event hooks — `documentStart`, `mappingStart`, `sequenceStart`, `key`, `scalar`, `mappingEnd`, `sequenceEnd`, `documentEnd`, `error`, `end`, plus a `document` convenience event
+- **`createStream(opts?)`**: creates a streaming parser
+- **`parseStream(input, opts?)`**: async generator yielding each document as it completes; accepts a string or any (async) iterable of chunks
+- **`YamlSecurity.createStream()` / `YamlSecurity.parseStream()`**: instance-bound streaming API (uses the instance's schema)
+- **Security enforced while streaming**: `maxInputBytes` per `write()`, `maxNodes` / `maxKeys` / `maxStringLength` per node/key/scalar, `maxDepth` on stack push, `maxAlias` / `maxAliasDepth` on alias resolution, merge-key `<<` overwrite guard, duplicate-key and tab-indentation errors
+- **Anchors**: `anchors: 'buffer'` (default, supports `&`/`*`) vs `anchors: 'disable'` (rejects anchors outright for true zero-buffering)
+- **Parsing coverage**: block maps/sequences, flow `[`/`{`, block scalars `|`/`>`, explicit keys, anchors/aliases, merge keys, multi-line plain scalars, quoted keys, top-level flow/scalar docs, `---`/`...` markers, `%TAG` directives, multi-document streams
+- Streaming parser is async-iterable (`for await (const ev of stream)`)
+
+### Tests
+- New `test/stream.js` (51 cases): round-trip parity with `parse`/`parseAll`, event-stream correctness, `parseStream` string + chunked input, `anchors: 'disable'`, limit enforcement, `YamlSecurity.createStream`
+
+### Documentation
+- **README**: new "Streaming API" section, comparison table row, anchor strategy notes
+- **TypeScript defs**: `StreamParser`, `StreamEvent`, `StreamOptions`, `createStream`, `parseStream`, `YamlSecurity.createStream/parseStream`
+
 ## 1.7.5 (2026-07-31)
 
 ### Documentation

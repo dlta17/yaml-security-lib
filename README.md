@@ -148,6 +148,88 @@ try { /* ... */ } catch (e) {
 }
 ```
 
+## Streaming API
+
+In addition to `parse`/`parseAll`, the library provides a zero-dependency, SAX-style **streaming parser**. It feeds YAML in chunks, emits events, and **enforces every security limit while streaming** — so a malicious document is rejected before the whole input is consumed.
+
+### `createStream(opts?)` → `StreamParser`
+
+Push-based incremental parser.
+
+```js
+import { createStream } from 'yaml-security-lib'
+
+const stream = createStream({ maxNodes: 10000, maxDepth: 50 })
+
+stream.on('key',      ev => console.log('key  ', ev.value))
+stream.on('scalar',   ev => console.log('value', ev.value))
+stream.on('document', doc => console.log('doc  ', doc))   // convenience: full document
+stream.on('end', () => console.log('done'))
+
+// feed in chunks (works for single- and multi-doc streams)
+stream.write('a: 1\n')
+stream.write('b: [2, 3]\n')
+stream.end()
+```
+
+`StreamParser` is also **async-iterable**:
+
+```js
+const stream = createStream()
+const consumer = (async () => {
+  for await (const ev of stream) console.log(ev.type, ev.value)
+})()
+stream.write('a: 1\n')
+stream.end()
+await consumer
+```
+
+Events: `documentStart`, `mappingStart`, `sequenceStart`, `key`, `scalar`, `mappingEnd`, `sequenceEnd`, `documentEnd`, `end` (plus `error`). Each `key`/`scalar` event carries `{ value, raw }`.
+
+### `parseStream(input, opts?)` → `AsyncGenerator`
+
+Yields each parsed document as it completes. Accepts a string or any (async) iterable of chunks.
+
+```js
+import { parseStream } from 'yaml-security-lib'
+
+for await (const doc of parseStream('a: 1\n---\nb: 2')) {
+  console.log(doc) // { a: 1 } then { b: 2 }
+}
+
+// streaming from an async source, document-by-document
+async function* chunks() {
+  yield 'name: أحمد\n'
+  yield '---\n'
+  yield 'count: 3\n'
+}
+for await (const doc of parseStream(chunks())) { /* ... */ }
+```
+
+### Security in streaming mode
+
+All limits (`maxNodes`, `maxDepth`, `maxKeys`, `maxExpansion`, `maxStringLength`, `maxAlias`, `maxAliasDepth`, `maxInputBytes`) are enforced **during** parsing. For example, `maxInputBytes` is checked on every `write()`, and `maxNodes`/`maxKeys` on every node/key seen.
+
+### Anchors: `buffered` vs `disable`
+
+Aliases require remembering the anchored node, which conflicts with true constant-memory streaming:
+
+- `anchors: 'buffer'` (default) — anchors/aliases are supported; anchored values are buffered in memory until resolved.
+- `anchors: 'disable'` — any `&`/`*` is rejected immediately for **true zero-buffering** (fully constant-memory streaming for anchor-free documents).
+
+### `YamlSecurity.createStream()` / `YamlSecurity.parseStream()`
+
+Instances expose the same streaming API, bound to the instance's schema and limits:
+
+```js
+const ys = new YamlSecurity({ maxDepth: 20 })
+const s = ys.createStream()
+s.on('document', doc => console.log(doc))
+s.write('a: 1\n'); s.end()
+
+for await (const doc of ys.parseStream('x: 1\n---\nx: 2')) { /* ... */ }
+```
+
 ### Constructor vs `setLimits`
 
 Constructor options only affect that specific instance. `setLimits` affects all instances globally.
@@ -180,6 +262,8 @@ normal.parse("&a 1\n&b *a\n&c *b\n&d *c\nkey: *d")
 | Dual license (AGPL + Commercial) | ✅ | ❌ (MIT) | ❌ (MIT) |
 | Schema system | ✅ | ✅ | ✅ |
 | Multi-document support | ✅ | ✅ | ✅ |
+| **Streaming parser** (SAX events + async iterator) | ✅ | ❌ | ✅ |
+| Zero dependencies (fully self-owned) | ✅ | ❌ | ❌ |
 
 ## YAML Test Suite
 
