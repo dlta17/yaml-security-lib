@@ -14,6 +14,13 @@
 - New `test/stream-fuzz.js` (4 layers): exhaustive split-point consistency, SAX event-replay reconstruction, 400 seeded random-grammar docs compared value-for-value against `js-yaml` (test-only devDependency), and 6 security bomb shapes. **1645 assertions, 0 failures.**
 - `test/stream.js` updated to 52 assertions (51 pass) with explicit `datetime` expectation (strings).
 
+### Follow-up fixes (same 1.8.1 release)
+- **Parse-path timestamp bug**: `resolveMerges` treated every `Date`/`Uint8Array`/`Buffer` as an empty map, so `parse('a: 2023-01-15')` returned `{a: {}}`. Non-map leaves are now passed through untouched.
+- **parse/stream consistency**: `parse()` implicit timestamps now resolve to strings (YAML 1.2 core), matching the stream; explicit `!!timestamp` still yields a `Date`.
+- **CI fix**: `npm ci` failed on fresh installs because `package-lock.json` was stale (missing `js-yaml`, version stuck at 1.7.6). The lockfile was regenerated and the fuzz oracle upgraded to **js-yaml v5** (YAML 1.2 core — timestamps as strings). The stream-fuzz oracle must stay on v5; js-yaml 4.x (YAML 1.1, `Date` timestamps) fails ~28 assertions.
+- **CI coverage**: `test/stream.js` and `test/stream-fuzz.js` added to `.github/workflows/ci.yml` (`stream-fuzz.js` runs after `npm ci` since it needs the js-yaml oracle).
+- New unit tests for implicit/explicit/nested timestamps (127 total).
+
 ## 1.8.0 (2026-08-03)
 
 ### New Feature: Streaming Parser

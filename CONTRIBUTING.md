@@ -25,8 +25,22 @@ By submitting a pull request, you accept these terms.
 ```bash
 npm install
 npm test
-npm run lint
 ```
+
+`npm test` runs the unit, fuzz, stream, and js-yaml-oracle suites. See
+[AGENTS.md](AGENTS.md) for hard invariants (timestamps, the js-yaml v5
+oracle, merge-key resolution) and the exact CI pipeline.
+
+## Versioning & Releases
+
+Every code/feature change bumps the version (`patch` fix / `minor` feature /
+`major` breaking) — never push code on an old version. Docs-only changes may
+stay on the current version.
+
+1. Update `version` in `package.json` and `package-lock.json` (run `npm install`
+   to sync the lockfile).
+2. Add a dated section to `CHANGELOG.md`.
+3. Commit, then `git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push origin main --tags`.
 
 ## Reporting Issues
 

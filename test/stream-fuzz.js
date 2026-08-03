@@ -228,6 +228,11 @@ function normEquals(a, b) {
 // js-yaml is the ground-truth oracle (devDependency, test-only). Where js-yaml
 // rejects the generated doc as malformed, value-correctness is undefined and we
 // only enforce the stream invariants (chunking + event-replay).
+//
+// WARNING: the oracle MUST stay on js-yaml v5.x (YAML 1.2 core — timestamps
+// resolve to strings, matching this library). js-yaml 4.x is YAML 1.1 and
+// returns Date for implicit timestamps, which fails ~28 assertions here.
+// Keep package.json and package-lock.json in sync; `npm ci` fails otherwise.
 {
   let generated = 0, compared = 0, malformed = 0;
   const rng = makeRng(0xC0FFEE);

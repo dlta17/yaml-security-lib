@@ -389,3 +389,20 @@ See [LICENSE](LICENSE) (AGPL-3.0) and [LICENSE.COMMERCIAL](LICENSE.COMMERCIAL).
 ## Author
 
 **Nedal Ibrahim** — salamanedal@gmail.com
+
+## Development & Testing
+
+```bash
+npm install
+npm test        # unit + fuzz + stream + stream-fuzz (js-yaml oracle)
+```
+
+- Zero runtime dependencies; rollup (dev-only) rebuilds the bundles.
+- Implicit timestamps resolve to **strings** (YAML 1.2 core); only explicit
+  `!!timestamp` yields a `Date` — `parse()` and the stream must always agree.
+- The stream-fuzz oracle is **js-yaml v5**; do not downgrade to v4 (YAML 1.1
+  turns timestamps into `Date`, failing ~28 oracle assertions).
+- Every code change bumps the version (`patch`/`minor`/`major`) with a
+  `CHANGELOG.md` entry and a `vX.Y.Z` git tag. Docs-only changes may stay put.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for details.
