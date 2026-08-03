@@ -5,6 +5,7 @@
 [![Downloads](https://img.shields.io/npm/dw/yaml-security-lib)](https://www.npmjs.com/package/yaml-security-lib)
 [![Bundle Size](https://img.shields.io/bundlephobia/min/yaml-security-lib)](https://bundlephobia.com/package/yaml-security-lib)
 [![TypeScript](https://img.shields.io/badge/TypeScript-ready-blue)](https://www.npmjs.com/package/yaml-security-lib)
+[![Snyk Advisor](https://img.shields.io/badge/Snyk%20Advisor-Recommended-brightgreen)](https://snyk.io/advisor/npm-package/yaml-security-lib)
 
 **Secure YAML parser for JavaScript.** Protects against:
 - **Duplicate keys** — Privilege escalation (K8s, GitLab, Ansible)
