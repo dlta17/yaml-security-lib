@@ -186,6 +186,13 @@ await consumer
 
 Events: `documentStart`, `mappingStart`, `sequenceStart`, `key`, `scalar`, `mappingEnd`, `sequenceEnd`, `documentEnd`, `end` (plus `error`). Each `key`/`scalar` event carries `{ value, raw }`.
 
+### Streaming semantics
+
+- **Multi-line scalars fold**: plain, double-quoted, and single-quoted scalars that span lines fold line breaks to a single space (`a: "line1\n  line2"` → `"line1 line2"`), matching reference parsers.
+- **Implicit timestamps are strings**: a plain `2023-01-15` resolves to the string `"2023-01-15"` (YAML 1.2 core behavior). Use an explicit `!!timestamp` tag to get a `Date`.
+- **Retroactive retraction**: for pathological `- - 2:` indentation the parser may emit a scalar and later retract it. The parser's `retractions` counter tells consumers when events cannot be replayed verbatim into the final tree.
+- **Merge keys (`<<`)** are resolved during buffering; the merge is applied after the mapped events are emitted, so a pure event-replay consumer should apply `<<` merges as post-processing.
+
 ### `parseStream(input, opts?)` → `AsyncGenerator`
 
 Yields each parsed document as it completes. Accepts a string or any (async) iterable of chunks.

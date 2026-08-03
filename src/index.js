@@ -1318,7 +1318,10 @@ function resolveScalarTop(s, schema, tagMap) {
   if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) return unescapeYaml(val.slice(1, -1));
   if (val.startsWith("'") && val.endsWith("'") && val.length >= 2) return val.slice(1, -1);
   for (const type of schema._implicit) {
-    if (type.resolve && type.resolve(val)) return type.construct(val);
+    if (type.resolve && type.resolve(val)) {
+      if (type.tag === 'tag:yaml.org,2002:timestamp') continue;
+      return type.construct(val);
+    }
   }
   return val;
 }
@@ -1359,6 +1362,7 @@ class StreamParser {
     this.pendingScalar = null;
     this.pendingExplicitKey = null;
     this.pendingBlock = null;
+    this.retractions = 0;
   }
 
   // ── Public API ──────────────────────────────────────────
@@ -1599,11 +1603,34 @@ class StreamParser {
 
     if (this.pendingScalar) {
       const pend = this.pendingScalar;
-      this.pendingScalar = null;
+      if (pend.quote) {
+        const content = line.slice(indent);
+        const scan = pend.quote === '"' ? this._scanDoubleQuoteEnd(content) : this._scanSingleQuoteEnd(content);
+        if (scan >= 0) {
+          this.pendingScalar = null;
+          const text = pend.parts.concat([content.slice(0, scan)]).join(' ');
+          const v = pend.quote === '"' ? unescapeYaml(text) : text.replace(/''/g, "'");
+          this._emitScalar(pend.seqCtx, v, pend.raw, pend.anchor);
+          return;
+        }
+        pend.parts.push(content);
+        return;
+      }
       if (indent > pend.seqIndent) {
-        this._openSeqItemMapping(pend.seqCtx, pend.seqIndent, pend.raw, pend.colonIdx);
+        if (pend.colonIdx < 0 && this._isPlainContinuation(line, indent)) {
+          if (pend.lines) pend.lines.push(line);
+          else pend.lines = [pend.raw, line];
+          this.pendingScalar = pend;
+          return;
+        }
+        this.pendingScalar = null;
+        if (pend.colonIdx >= 0) {
+          this._openSeqItemMapping(pend.seqCtx, pend.seqIndent, pend.raw, pend.colonIdx);
+        } else {
+          pend.seqCtx.pendingItem = true;
+        }
       } else {
-        this._emitScalar(pend.seqCtx, pend.value, pend.raw);
+        this._finalizePendingScalar();
       }
     }
 
@@ -1768,6 +1795,14 @@ class StreamParser {
       seqCtx.pendingItem = true;
       return;
     }
+    if (item === '-' || item.startsWith('- ')) {
+      seqCtx.pendingItem = true;
+      this._emit('sequenceStart');
+      this._count();
+      const inner = this._openSeq(indent + 2);
+      this._handleSeqItem(indent + 2, item, inner);
+      return;
+    }
     if (item.startsWith('[') || item.startsWith('{')) {
       this._emitFlow(seqCtx, item, null);
       return;
@@ -1783,11 +1818,20 @@ class StreamParser {
     }
     if (ci >= 0 && item[ci + 1] === undefined) {
       const key = item.slice(0, ci).trim();
-      this.pendingScalar = { seqCtx, seqIndent: indent, value: key + ':', raw: item, colonIdx: ci };
+      this.pendingScalar = { seqCtx, seqIndent: indent, value: key + ':', raw: item, anchor: null, colonIdx: ci, lines: null, quote: null, parts: null };
+      return;
+    }
+    const itemTrim = item.trim();
+    if (itemTrim[0] === '"' && this._scanDoubleQuoteEnd(itemTrim, 1) < 0) {
+      this.pendingScalar = { seqCtx, seqIndent: indent, value: null, raw: itemTrim, anchor: null, colonIdx: -1, lines: null, quote: '"', parts: [itemTrim.slice(1)] };
+      return;
+    }
+    if (itemTrim[0] === "'" && this._scanSingleQuoteEnd(itemTrim, 1) < 0) {
+      this.pendingScalar = { seqCtx, seqIndent: indent, value: null, raw: itemTrim, anchor: null, colonIdx: -1, lines: null, quote: "'", parts: [itemTrim.slice(1)] };
       return;
     }
     const v = resolveScalarTop(item, this.schema, this.tagMap);
-    this._emitScalar(seqCtx, v, item);
+    this.pendingScalar = { seqCtx, seqIndent: indent, value: v, raw: item, anchor: null, colonIdx: -1, lines: null, quote: null, parts: null };
   }
 
   _openSeqItemMapping(seqCtx, indent, item, ci) {
@@ -1901,11 +1945,7 @@ class StreamParser {
       this.pendingExplicitKey = null;
       this._emitScalar(pk.ctx, null, '');
     }
-    if (this.pendingScalar) {
-      const pend = this.pendingScalar;
-      this.pendingScalar = null;
-      this._emitScalar(pend.seqCtx, pend.value, pend.raw);
-    }
+    if (this.pendingScalar) this._finalizePendingScalar();
     while (this.stack.length) this._closeTop();
   }
 
@@ -1914,7 +1954,11 @@ class StreamParser {
     if (this.pendingBlock) this._finishBlock();
     if (this.rootMode === 'scalar') {
       const lines = this._rootScalarLines || [];
-      const text = this._foldScalarLines(lines);
+      const f0 = (lines[0] || '').trim();
+      let text;
+      const multiQuoted = (f0[0] === '"' || f0[0] === "'") &&
+        (f0[0] === '"' ? this._scanDoubleQuoteEnd(f0, 1) : this._scanSingleQuoteEnd(f0, 1)) < 0;
+      text = multiQuoted ? this._foldQuotedRoot(lines) : this._foldRootScalarLines(lines);
       const v = resolveScalarTop(text, this.schema, this.tagMap);
       this._checkString(v);
       this._count();
@@ -1961,6 +2005,7 @@ class StreamParser {
     seqCtx.node.pop();
     seqCtx.replaceInline = seqCtx.lastInlineIndex;
     seqCtx.lastInlineIndex = -1;
+    this.retractions++;
   }
 
   _attachToParent(ctx) {
@@ -2048,7 +2093,19 @@ class StreamParser {
       this._emitFlow(ctx, rest, anchor);
       return;
     }
+    if (rest[0] === '"' && this._scanDoubleQuoteEnd(rest, 1) < 0) {
+      this.pendingScalar = { seqCtx: ctx, seqIndent: ctx.indent, value: null, raw: rest, anchor, colonIdx: -1, lines: null, quote: '"', parts: [rest.slice(1)] };
+      return;
+    }
+    if (rest[0] === "'" && this._scanSingleQuoteEnd(rest, 1) < 0) {
+      this.pendingScalar = { seqCtx: ctx, seqIndent: ctx.indent, value: null, raw: rest, anchor, colonIdx: -1, lines: null, quote: "'", parts: [rest.slice(1)] };
+      return;
+    }
     const v = resolveScalarTop(rest, this.schema, this.tagMap);
+    if (rest[0] !== '"' && rest[0] !== "'" && ctx && ctx.kind === 'map' && ctx.pendingKey !== null) {
+      this.pendingScalar = { seqCtx: ctx, seqIndent: ctx.indent, value: v, raw: rest, anchor, colonIdx: -1, lines: null, quote: null, parts: null };
+      return;
+    }
     this._emitScalar(ctx, v, valStr, anchor);
   }
 
@@ -2329,6 +2386,85 @@ class StreamParser {
     if (raw.endsWith(' ')) raw = raw.trimEnd();
     const v = resolveScalarTop(raw, this.schema, this.tagMap);
     return { value: this._flowScalar(v, raw), endPos: end };
+  }
+
+  _isPlainContinuation(line, indent) {
+    const c = line.slice(indent);
+    if (c === '' || c.startsWith('#') || c === '-' || c.startsWith('- ') || c === '?' || c.startsWith('? ') ||
+        c.startsWith('&') || c.startsWith('*') || c.startsWith('!') || c.startsWith('|') || c.startsWith('>') ||
+        c.startsWith('[') || c.startsWith('{')) return false;
+    if (findKeySepTop(c) >= 0) return false;
+    return true;
+  }
+
+  _scanDoubleQuoteEnd(s, from = 0) {
+    let i = from;
+    while (i < s.length) {
+      if (s[i] === '\\') { i += 2; continue; }
+      if (s[i] === '"') return i;
+      i++;
+    }
+    return -1;
+  }
+
+  _scanSingleQuoteEnd(s, from = 0) {
+    let i = from;
+    while (i < s.length) {
+      if (s[i] === "'") {
+        if (s[i + 1] === "'") { i += 2; continue; }
+        return i;
+      }
+      i++;
+    }
+    return -1;
+  }
+
+  _foldQuotedRoot(lines) {
+    const quote = lines[0].trim()[0];
+    let text = lines[0].trim().slice(1);
+    for (let i = 1; i < lines.length; i++) {
+      const c = lines[i].trim();
+      const close = quote === '"' ? this._scanDoubleQuoteEnd(c) : this._scanSingleQuoteEnd(c);
+      if (close >= 0) { text += ' ' + c.slice(0, close); break; }
+      text += ' ' + c;
+    }
+    return quote === '"' ? unescapeYaml(text) : text.replace(/''/g, "'");
+  }
+
+  _finalizePendingScalar() {
+    const pend = this.pendingScalar;
+    this.pendingScalar = null;
+    if (!pend) return;
+    if (pend.lines) {
+      const text = this._foldScalarLines(pend.lines);
+      const v = resolveScalarTop(text, this.schema, this.tagMap);
+      this._emitScalar(pend.seqCtx, v, pend.raw, pend.anchor);
+      return;
+    }
+    if (pend.quote) {
+      const text = pend.parts.join(' ');
+      const v = pend.quote === '"' ? unescapeYaml(text) : text.replace(/''/g, "'");
+      this._emitScalar(pend.seqCtx, v, pend.raw, pend.anchor);
+      return;
+    }
+    this._emitScalar(pend.seqCtx, pend.value, pend.raw, pend.anchor);
+  }
+
+  _foldRootScalarLines(lines) {
+    const out = [];
+    let buf = null;
+    for (const l of lines) {
+      const t = l.trim();
+      if (t === '') {
+        if (buf !== null) out.push(buf);
+        buf = null;
+        out.push('');
+        continue;
+      }
+      buf = buf === null ? t : buf + ' ' + t;
+    }
+    if (buf !== null) out.push(buf);
+    return out.join('\n');
   }
 
   _foldScalarLines(lines) {

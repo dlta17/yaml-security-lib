@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.8.1 (2026-08-03)
+
+### Bug Fixes (Streaming Parser)
+- **Multi-line plain scalars in block context**: inline values (`b: line1`) now fold continuation lines correctly (`b: line1\n  line2` → `"line1 line2"`); previously only the first line survived. Applies to map values and sequence items at any nesting depth.
+- **Multi-line double/single-quoted scalars**: unterminated quotes (`a: "line1\n  line2"`) now accumulate lines and fold to a single space, matching reference parsers; previously the value was truncated after the first line.
+- **Root multi-line scalars**: root plain scalars with a continuation line at indent 0 now fold like reference parsers (`line1\nline2` → `"line1 line2"`), including quoted roots.
+- **Nested sequence items with empty-value map keys** (`- a:\n    line1\n    line2`): the map header is no longer folded into a scalar; it opens the nested mapping correctly.
+- **Implicit timestamps resolve to strings**: plain scalars like `2023-01-15` now stay strings (YAML 1.2 core + reference-parser behavior) instead of becoming `Date` objects. Explicit `!!timestamp` tags still construct a `Date`.
+- **Delayed scalar emission**: inline plain map values are now emitted lazily so continuation folding never requires a retroactive event retraction (except pathological `- -` indentation, tracked via the parser's `retractions` counter).
+
+### Tests
+- New `test/stream-fuzz.js` (4 layers): exhaustive split-point consistency, SAX event-replay reconstruction, 400 seeded random-grammar docs compared value-for-value against `js-yaml` (test-only devDependency), and 6 security bomb shapes. **1645 assertions, 0 failures.**
+- `test/stream.js` updated to 52 assertions (51 pass) with explicit `datetime` expectation (strings).
+
 ## 1.8.0 (2026-08-03)
 
 ### New Feature: Streaming Parser
