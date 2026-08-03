@@ -364,6 +364,15 @@ assert(keyLimit.parse('a: 1\nb: 2\nc: 3').ok, 'maxKeys=3 allows 3-key mapping');
 assert(!keyLimit.parse('{a: 1, b: 2, c: 3, d: 4}').ok, 'maxKeys=3 blocks 4-key inline mapping');
 YamlSecurity.setLimits();
 
+// ── Timestamps (YAML 1.2: implicit = string, explicit !!timestamp = Date) ──
+assertEqual(p.parse('x: 2001-01-23').result, { x: '2001-01-23' }, 'implicit date stays string (YAML 1.2 core)');
+assertEqual(p.parse('x: 2001-01-23T10:30:00Z').result, { x: '2001-01-23T10:30:00Z' }, 'implicit datetime stays string');
+const tsResult = p.parse('x: !!timestamp 2001-01-23').result;
+assert(tsResult.x instanceof Date && tsResult.x.toISOString() === '2001-01-23T00:00:00.000Z', 'explicit !!timestamp resolves to Date');
+// Date inside a mapping must survive (regression: resolveMerges turned it into {})
+const nestedDate = p.parse('a:\n  b: 2001-01-23').result;
+assert(nestedDate.a.b instanceof Date === false && nestedDate.a.b === '2001-01-23', 'nested implicit date stays string');
+
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

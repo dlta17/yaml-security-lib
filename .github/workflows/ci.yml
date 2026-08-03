@@ -27,8 +27,12 @@ jobs:
         run: node test/index.js
       - name: Test fuzz
         run: node test/fuzz.js
+      - name: Test stream
+        run: node test/stream.js
       - name: Install dev deps (rollup)
         run: npm ci --no-audit --no-fund
+      - name: Test stream fuzz (js-yaml oracle)
+        run: node test/stream-fuzz.js
       - name: Build + test CJS
         shell: bash
         run: |

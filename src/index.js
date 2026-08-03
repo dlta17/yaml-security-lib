@@ -502,6 +502,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
 
     for (const type of _schema._implicit) {
       if (type.resolve && type.resolve(val)) {
+        if (type.tag === 'tag:yaml.org,2002:timestamp') continue;
         return type.construct(val);
       }
     }
@@ -974,7 +975,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   // Resolve merge keys (<<: *anchor)
   function resolveMerges(v) {
     if (Array.isArray(v)) return v.map(resolveMerges);
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
+    if (v instanceof Date || v instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(v))) return v;
+    if (v && typeof v === 'object') {
       const merged = {};
       const sources = v['<<'];
       if (sources !== undefined) {
