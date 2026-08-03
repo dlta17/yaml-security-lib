@@ -60,8 +60,9 @@ version. Docs-only changes may stay on the current version.
 2. Update `version` in `package.json` **and** `package-lock.json` (run
    `npm install` to sync the lockfile automatically).
 3. Add a dated section to `CHANGELOG.md` describing the change.
-4. Commit, then push main **and** an annotated tag:
-   `git tag -a v1.8.1 -m "v1.8.1"` + `git push origin main --tags`.
+4. Commit, then push main **and** a lightweight tag (matches the existing repo
+   convention — all tags are lightweight, e.g. `v1.8.1`):
+   `git tag v1.8.1 && git push origin main --tags`.
 
 ## CI
 

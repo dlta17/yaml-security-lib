@@ -40,7 +40,8 @@ stay on the current version.
 1. Update `version` in `package.json` and `package-lock.json` (run `npm install`
    to sync the lockfile).
 2. Add a dated section to `CHANGELOG.md`.
-3. Commit, then `git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push origin main --tags`.
+3. Commit, then `git tag vX.Y.Z` (lightweight, matching existing repo tags) and
+   `git push origin main --tags`.
 
 ## Reporting Issues
 
