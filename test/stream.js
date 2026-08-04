@@ -91,7 +91,7 @@ const overrides = {
   'seq of maps block': [{ name: 'Mark' }, { name: 'Sammy' }],
   'multiline plain value': { plain: 'This unquoted scalar spans many lines.' },
   'plain value then key': { plain: 'This is the value', next: 2 },
-  'dash alone': ['b'],
+  'dash alone': [null, "b"],
   'seq nested': [[1, 2], [3]],
   'datetime': { when: '2023-01-15', when2: '2023-01-15T10:30:00Z' },
 };

@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.9.0 (2026-08-04)
+
+### YAML Test Suite Conformance
+- **313 / 351 tests passing** (up from ~245 in v1.8.1 — ~68 new fixes).
+
+### Improvements — Block Parser (`parseBlock`)
+- **`findKeySep` overhaul**: quote-aware scanning (handles `"` and `'` with escapes), flow depth tracking (colon inside `[]`/`}` is not a key separator), mid-token quotes (`bla"keks`) treated as literal, `\n`/`\r` accepted as after-colon separators.
+- **Tab indentation relaxation**: leading tabs are tolerated when followed by a flow collection (`[`, `{`), a comment (`#`), or nothing (tab as separation per YAML spec). Strict `getIndent` still rejects tabs for keys and sequence items; a new `contentIndent` helper handles scalar content.
+- **Flow helpers**: `flowKeySep()` detects `: ` inside flow sequence items (implicit mapping detection), `scanFlowItemEnd()` finds `,`/`]`/`}` boundaries at flow depth 0, `tagContentValue()` extracts values after `!tag` prefixes.
+- **Explicit key gather loop**: added `findKeySep(t) >= 0` break condition for same-indent mapping entries; fixed line-skipping via `i = vi - 1; continue`.
+- **Sequence empty/comment items**: empty dash items (`- `, `- #comment`) now resolve to `null` in both the tree and streaming parsers.
+- **Alias comment stripping**: clean up trailing comments from alias values.
+- **BlockEnd scan**: break when `getIndent === indent && !startsWith('-')`.
+
+### Improvements — Double-Quoted Strings (`unescapeYaml`)
+- Added `\t` escape mapping.
+- Hex digit validation for `\x`, `\u`, `\U` — short sequences now throw.
+- Unknown escape sequences throw instead of silently returning the character.
+
+### Improvements — Streaming Parser
+- Empty sequence items (`- `) now emit `null` instead of `""`, matching the tree parser and YAML 1.2 spec.
+
+### Improvements — Flow Collections
+- **Flow implicit mapping in block sequences**: `- key: val` detected as implicit mapping items via `flowKeySep` lookahead; handles `- {map}`, `- [seq]`, empty items → `null`.
+- **Flow implicit mapping in flow mappings (`{...}`)**: plain-key `?` prefix stripping, newline fold for plain scalars, tag parse via `parseScalar`, comment skip before/after `:`, empty value → `null`, tag prefix terminator guard.
+
+### Tests
+- `test/stream.js`: 51 → 51 (updated `dash alone` expectation to `null`)
+- `test/yaml-test-suite.js`: 313/351 passing
+
 ## 1.8.1 (2026-08-03)
 
 ### Bug Fixes (Streaming Parser)

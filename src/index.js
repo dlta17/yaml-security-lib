@@ -82,18 +82,26 @@ const ESC_MAP = {
   '0': '\x00', 'a': '\x07', 'b': '\x08', 't': '\t', 'n': '\n',
   'v': '\x0b', 'f': '\x0c', 'r': '\r', 'e': '\x1b',
   ' ': ' ',  '"': '"',  '/': '/', '\\': '\\', 'N': '\x85',
-  '_': '\xa0', 'L': '\u2028', 'P': '\u2029',
+  '_': '\xa0', 'L': '\u2028', 'P': '\u2029', '\t': '\t',
 };
 function unescapeYaml(s) {
   return s.replace(/\\(x[\da-fA-F]{1,2}|u[\da-fA-F]{4}|U[\da-fA-F]{8}|.)/g, (m, seq) => {
     const ch = seq[0];
-    if (ch === 'x') return String.fromCharCode(parseInt(seq.slice(1), 16));
-    if (ch === 'u') return String.fromCharCode(parseInt(seq.slice(1), 16));
+    if (ch === 'x') {
+      if (seq.length < 2) throw new YAMLException('YAML: expected hexadecimal digits after \\x in double-quoted string');
+      return String.fromCharCode(parseInt(seq.slice(1), 16));
+    }
+    if (ch === 'u') {
+      if (seq.length < 5) throw new YAMLException('YAML: expected 4 hexadecimal digits after \\u in double-quoted string');
+      return String.fromCharCode(parseInt(seq.slice(1), 16));
+    }
     if (ch === 'U') {
+      if (seq.length < 9) throw new YAMLException('YAML: expected 8 hexadecimal digits after \\U in double-quoted string');
       const cp = parseInt(seq.slice(1), 16);
       return cp > 0xFFFF ? String.fromCharCode(0xD800 + ((cp - 0x10000) >> 10), 0xDC00 + ((cp - 0x10000) & 0x3FF)) : String.fromCharCode(cp);
     }
-    return ESC_MAP[ch] !== undefined ? ESC_MAP[ch] : ch;
+    if (ESC_MAP[ch] !== undefined) return ESC_MAP[ch];
+    throw new YAMLException('YAML: unknown escape sequence "\\' + ch + '" in double-quoted string');
   });
 }
 
@@ -305,7 +313,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   const { anchors, anchorDepths, anchorSources, mergeOverrideKeys, nodeWeights } = state;
 
   const lines = yamlStr.split('\n');
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '' && false) lines.pop();
 
   // ── Process YAML directives & markers ──
   let docStartIdx = 0;
@@ -319,7 +327,6 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         break;
       }
       if (trimmed.startsWith('... ') && trimmed.length > 4) {
-        lines[docStartIdx] = raw.slice(0, raw.length - trimmed.length) + trimmed.slice(4);
         break;
       }
       docStartIdx++; continue;
@@ -408,13 +415,103 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   // Find the first `:` that acts as a key-value separator:
   // followed by space, tab, EOL, `#`, `}`, `]` — but not inside a quoted string
   function findKeySep(str, start) {
+    let quote = null;
+    let flowDepth = 0;
     for (let i = start || 0; i < str.length; i++) {
-      if (str[i] === ':') {
-        if (i + 1 >= str.length || str[i + 1] === ' ' || str[i + 1] === '\t' || str[i + 1] === '}' || str[i + 1] === ']')
+      const ch = str[i];
+      if (quote) {
+        if (quote === '"') {
+          if (ch === '\\') { i++; continue; }
+          if (ch === '"') quote = null;
+        } else {
+          if (ch === "'" && str[i + 1] === "'") { i++; continue; }
+          if (ch === "'") quote = null;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        // A quote only opens a quoted token at the start of the string or right
+        // after a token delimiter; mid-token quotes (e.g. `bla"keks`) are literal.
+        if (i === (start || 0) || /[\s,:\[\]{]/.test(str[i - 1])) quote = ch;
+        continue;
+      }
+      if (ch === '[' || ch === '{') { flowDepth++; continue; }
+      if (ch === ']' || ch === '}') { flowDepth = Math.max(0, flowDepth - 1); continue; }
+      if (ch === ':' && flowDepth === 0) {
+        if (i + 1 >= str.length || str[i + 1] === ' ' || str[i + 1] === '\t' || str[i + 1] === '\n' || str[i + 1] === '\r' || str[i + 1] === '}' || str[i + 1] === ']')
           return i;
       }
     }
     return -1;
+  }
+
+  // Detect a key-value separator inside a flow sequence item: the first `:`
+  // at flow depth 0 (honoring quotes and comments). Returns -1 when the item
+  // is a plain scalar (no separator, or a nested flow collection).
+  function flowKeySep(s) {
+    let quote = null;
+    let depth = 0;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (quote) {
+        if (quote === '"') {
+          if (ch === '\\') { i++; continue; }
+          if (ch === '"') quote = null;
+        } else {
+          if (ch === "'" && s[i + 1] === "'") { i++; continue; }
+          if (ch === "'") quote = null;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        if (i === 0 || /[\s,:\[\]{]/.test(s[i - 1])) quote = ch;
+        continue;
+      }
+      if (ch === '#' && (i === 0 || /[\s\n]/.test(s[i - 1]))) {
+        while (i < s.length && s[i] !== '\n') i++;
+        continue;
+      }
+      if (ch === '[' || ch === '{') { depth++; continue; }
+      if (ch === ']' || ch === '}') { if (depth === 0) return -1; depth--; continue; }
+      if (ch === ',') { if (depth === 0) return -1; continue; }
+      if (ch === ':' && depth === 0) {
+        if (i + 1 >= s.length || s[i + 1] === ' ' || s[i + 1] === '\t' || s[i + 1] === '\n' || s[i + 1] === '\r' || s[i + 1] === '}' || s[i + 1] === ']' || s[i + 1] === ',')
+          return i;
+      }
+    }
+    return -1;
+  }
+
+  // End offset of a flow sequence item: the first `,`, `]` or `}` at depth 0,
+  // honoring quotes, flow brackets and comments.
+  function scanFlowItemEnd(s) {
+    let quote = null;
+    let depth = 0;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (quote) {
+        if (quote === '"') {
+          if (ch === '\\') { i++; continue; }
+          if (ch === '"') quote = null;
+        } else {
+          if (ch === "'" && s[i + 1] === "'") { i++; continue; }
+          if (ch === "'") quote = null;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        if (i === 0 || /[\s,:\[\]{]/.test(s[i - 1])) quote = ch;
+        continue;
+      }
+      if (ch === '#' && (i === 0 || /[\s\n]/.test(s[i - 1]))) {
+        while (i < s.length && s[i] !== '\n') i++;
+        continue;
+      }
+      if (ch === '[' || ch === '{') { depth++; continue; }
+      if (ch === ']' || ch === '}') { if (depth === 0) return i; depth--; continue; }
+      if (ch === ',') { if (depth === 0) return i; continue; }
+    }
+    return s.length;
   }
 
   function err(msg, col) {
@@ -432,46 +529,112 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   function getIndent(line) {
     let i = 0;
     while (i < line.length && line[i] === ' ') i++;
-    if (i < line.length && line[i] === '\t')
-      throw err('Tab characters are not allowed for indentation in YAML 1.2', i);
+    if (i < line.length && line[i] === '\t') {
+      // Tabs are allowed as separation (never indentation). A leading tab is
+      // tolerated only when followed by a flow collection or a comment; a tab
+      // after at least one space counts as separation and is ignored.
+      if (i === 0) {
+        let j = 0;
+        while (j < line.length && (line[j] === ' ' || line[j] === '\t')) j++;
+        const c = j < line.length ? line[j] : '';
+        if (c !== '[' && c !== '{' && c !== '#' && c !== '')
+          throw err('Tab characters are not allowed for indentation in YAML 1.2', i);
+      }
+    }
     return i;
+  }
+
+  // Indentation depth for scalar-content lines: a leading tab counts as one
+  // column so tab-looking indentation in scalar values still nests. Keys and
+  // sequence items keep using the strict getIndent (tabs are rejected there).
+  function contentIndent(line) {
+    if (line[0] === '\t') return 1;
+    let i = 0;
+    while (i < line.length && line[i] === ' ') i++;
+    return i;
+  }
+
+  function tagContentValue(content) {
+    const c = content.trim();
+    if (c === '') return null;
+    if (c.startsWith('"')) {
+      let close = -1, pos = 1;
+      while (pos < c.length) {
+        if (c[pos] === '\\') { pos += 2; continue; }
+        if (c[pos] === '"') { close = pos; break; }
+        pos++;
+      }
+      if (close > 0) return unescapeYaml(foldFlowScalar(c.slice(1, close)));
+    }
+    if (c.startsWith("'")) {
+      let close = -1, pos = 1;
+      while (pos < c.length) {
+        if (c[pos] === "'" && pos + 1 < c.length && c[pos + 1] === "'") { pos += 2; continue; }
+        if (c[pos] === "'") { close = pos; break; }
+        pos++;
+      }
+      if (close > 0) return foldFlowScalar(c.slice(1, close)).replace(/''/g, "'");
+    }
+    if (c.startsWith('[') || c.startsWith('{')) {
+      const fr = parseInlineFlow(c);
+      if (fr.value !== undefined) return fr.value;
+    }
+    return c;
   }
 
   function parseScalar(s) {
     let trimmed = s.trim();
 
+    // Quoted scalar (possibly spanning several lines): fold inside the quotes.
+    if (trimmed.startsWith('"') || trimmed.startsWith("'")) {
+      const quote = trimmed[0];
+      let close = -1;
+      let pos = 1;
+      if (quote === '"') {
+        while (pos < trimmed.length) {
+          if (trimmed[pos] === '\\') { pos += 2; continue; }
+          if (trimmed[pos] === '"') { close = pos; break; }
+          pos++;
+        }
+        if (close > 0) {
+          return unescapeYaml(foldFlowScalar(trimmed.slice(1, close)));
+        }
+      } else {
+        while (pos < trimmed.length) {
+          if (trimmed[pos] === "'" && trimmed[pos + 1] === "'") { pos += 2; continue; }
+          if (trimmed[pos] === "'") { close = pos; break; }
+          pos++;
+        }
+        if (close > 0) {
+          return foldFlowScalar(trimmed.slice(1, close)).replace(/''/g, "'");
+        }
+      }
+    }
+
     // Fold multi-line plain scalars (continuation lines starting with spaces)
     if (trimmed.includes('\n')) {
       const lines = trimmed.split('\n');
-      const folded = [];
-      let i = 0;
-      while (i < lines.length) {
-        if (lines[i].trim() === '') {
-          folded.push('');
-          i++;
+      let out = '';
+      let pendingBlank = 0;
+      for (const line of lines) {
+        if (line.trim() === '') { pendingBlank++; continue; }
+        const content = line.trim();
+        if (pendingBlank > 0) {
+          out += '\n'.repeat(pendingBlank) + content;
+          pendingBlank = 0;
+        } else if (out !== '') {
+          out += ' ' + content;
         } else {
-          let accum = lines[i];
-          i++;
-          while (i < lines.length && (lines[i].trim() === '' || lines[i].startsWith(' '))) {
-            if (lines[i].trim() === '') {
-              folded.push(accum);
-              accum = '';
-              i++;
-            } else {
-              accum += ' ' + lines[i].trim();
-              i++;
-            }
-          }
-          folded.push(accum);
+          out = content;
         }
       }
-      trimmed = folded.join('\n');
+      trimmed = out;
     }
 
-    const tagMatch = trimmed.match(/^(![^\s]+)\s+/);
+    const tagMatch = trimmed.match(/^(![^\s]+)/);
     if (tagMatch) {
       const rawTag = tagMatch[1];
-      const tagVal = trimmed.slice(tagMatch[0].length);
+      const tagVal = trimmed.slice(tagMatch[0].length).replace(/[ \t]#[^\n]*$/, '').trim();
       let fullTag;
 
       if (rawTag.startsWith('!!')) {
@@ -487,7 +650,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       if (rawTag.startsWith('!!')) {
         // unknown !! tag — fall through to implicit
       } else {
-        return trimmed;
+        // Unknown ! (or non-specific) tag: the content after the tag is the value.
+        if (tagVal === '') return null;
+        if (tagVal.startsWith('"') || tagVal.startsWith("'")) return parseScalar(tagVal);
+        if (tagVal.startsWith('[') || tagVal.startsWith('{')) {
+          const fr = parseInlineFlow(tagVal);
+          return fr.value !== undefined ? fr.value : parseScalar(tagVal);
+        }
+        return tagVal;
       }
     }
 
@@ -509,7 +679,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     return val;
   }
 
-  function parseInlineFlow(str, _flowDepth, _line) {
+  function parseInlineFlow(str, _flowDepth, _line, _inValue, _blockValue) {
     if (_flowDepth === undefined) _flowDepth = 0;
     if (_flowDepth > 100) throw new YAMLException('YAML: flow nesting too deep (>100)');
     const s = str.trim();
@@ -517,16 +687,44 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     if (s.startsWith('[')) {
       const items = [];
       let i = 1;
+      let afterComma = true;
       while (i < s.length) {
         const c = s[i];
         if (c === ']') {
           const w = items.reduce((s, item) => s + nodeWeight(item), 1);
           return { value: track(items, w), endPos: i + 1 };
         }
-        if (c === ',' || c === ' ') { i++; continue; }
-        const r = parseInlineFlow(s.slice(i), _flowDepth + 1, _line);
+        if (c === ' ' || c === '\n' || c === '\t') { i++; continue; }
+        if (c === ',') {
+          if (afterComma) throw new YAMLException('YAML: unexpected comma in flow sequence');
+          afterComma = true;
+          i++;
+          continue;
+        }
+        if (c === '#') {
+          const lineStartOk = /^[ \t]*$/.test(s.slice((s.lastIndexOf('\n', i - 1)) + 1, i));
+          const prev = i > 0 ? s[i - 1] : '';
+          if (!lineStartOk && prev !== ' ' && prev !== '\t' && prev !== '\n')
+            throw new YAMLException('YAML: invalid comment in flow sequence');
+          while (i < s.length && s[i] !== '\n') i++;
+          continue;
+        }
+        const sub = s.slice(i);
+        const sep = flowKeySep(sub);
+        if (sep > 0) {
+          const e = scanFlowItemEnd(sub);
+          const fr = parseInlineFlow('{' + sub.slice(0, e) + '}');
+          if (fr.value && typeof fr.value === 'object') {
+            items.push(fr.value);
+            i += e;
+            afterComma = false;
+            continue;
+          }
+        }
+        const r = parseInlineFlow(sub, _flowDepth + 1, _line);
         items.push(r.value);
         i += r.endPos;
+        afterComma = false;
       }
       const w = items.reduce((s, item) => s + nodeWeight(item), 1);
       return { value: track(items, w), endPos: s.length };
@@ -535,13 +733,25 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       const obj = {};
       const seenKeys = new Set();
       let i = 1;
+      let needComma = false;
       while (i < s.length) {
         const c = s[i];
         if (c === '}') {
           const w = Object.values(obj).reduce((s, item) => s + nodeWeight(item), 1);
           return { value: track(obj, w), endPos: i + 1 };
         }
-        if (c === ',' || c === ' ') { i++; continue; }
+        if (c === ',') { needComma = false; i++; continue; }
+        if (c === ' ' || c === '\n' || c === '\t') { i++; continue; }
+        if (c === '#') {
+          const lineStartOk = /^[ \t]*$/.test(s.slice((s.lastIndexOf('\n', i - 1)) + 1, i));
+          const prev = i > 0 ? s[i - 1] : '';
+          if (!lineStartOk && prev !== ' ' && prev !== '\t' && prev !== '\n')
+            throw new YAMLException('YAML: invalid comment in flow mapping');
+          while (i < s.length && s[i] !== '\n') i++;
+          continue;
+        }
+        if (needComma && findKeySep(s.slice(i)) >= 0)
+          throw new YAMLException('YAML: missing separating comma in flow mapping');
         let key;
         if (s[i] === '"' || s[i] === "'") {
           if (_line !== undefined) currentColumn = (_line.length - s.length) + offset + i;
@@ -567,19 +777,40 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           }
           key = s.slice(i + 1, close);
           if (quote === '"') key = unescapeYaml(key);
+          key = key.replace(/[ \t]*\n[ \t]*/g, ' ');
           i = close + 1;
         } else {
           let j = i;
           while (j < s.length && s[j] !== ':' && s[j] !== ',' && s[j] !== '}') j++;
           key = s.slice(i, j).trim();
+          if (key.startsWith('? ')) key = key.slice(2).trim();
+          key = key.replace(/[ \t]*\n[ \t]*/g, ' ');
+          if (key.startsWith('!')) key = parseScalar(key);
           i = j;
         }
         if (cfg.maxKeys > 0 && seenKeys.size >= cfg.maxKeys)
           throw new YAMLException('YAML: inline mapping keys limit exceeded (' + cfg.maxKeys + ')');
         if (seenKeys.has(key)) throw new YAMLException('YAML: Duplicate key: "' + key + '"');
         seenKeys.add(key);
-        while (i < s.length && (s[i] === ' ' || s[i] === ':')) i++;
-        const r = parseInlineFlow(s.slice(i), _flowDepth + 1, _line);
+        while (i < s.length) {
+          const cc = s[i];
+          if (cc === ' ' || cc === '\t' || cc === '\n' || cc === '\r') { i++; continue; }
+          if (cc === '#') { while (i < s.length && s[i] !== '\n') i++; continue; }
+          break;
+        }
+        if (i < s.length && s[i] === ':') i++;
+        while (i < s.length) {
+          const cc = s[i];
+          if (cc === ' ' || cc === '\t' || cc === '\n' || cc === '\r') { i++; continue; }
+          if (cc === '#') { while (i < s.length && s[i] !== '\n') i++; continue; }
+          break;
+        }
+        if (i >= s.length || s[i] === ',' || s[i] === '}') {
+          safeAssign(obj, key, null);
+          needComma = true;
+          continue;
+        }
+        const r = parseInlineFlow(s.slice(i), _flowDepth + 1, _line, true);
         const val = r.value;
         if (typeof val === 'string' && val.startsWith('&')) {
           const aname = val.slice(1).split(/[ ,\]}]/)[0];
@@ -590,13 +821,16 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           setAnchor(aname, anchored, srcAnchor);
           safeAssign(obj, key, anchored);
           i += aname.length + 1 + rr.endPos;
+          needComma = true;
         } else if (typeof val === 'string' && val.startsWith('*')) {
           const aname = val.slice(1);
           safeAssign(obj, key, track(resolveAlias(aname)));
           i += val.length;
+          needComma = true;
         } else {
           safeAssign(obj, key, val);
           i += r.endPos;
+          needComma = true;
         }
       }
       const w = Object.values(obj).reduce((s, item) => s + nodeWeight(item), 1);
@@ -624,11 +858,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       const aname = s.slice(1).split(/[ ,}\]]/)[0];
       return { value: track(resolveAlias(aname)), endPos: aname.length + 1 };
     }
-    const tagPrefix = s.match(/^(![^\s]+)\s+/);
+    const tagPrefix = s.match(/^(![^\s]*)\s+/);
     if (tagPrefix) {
       const rawTag = tagPrefix[1];
       const rest = s.slice(tagPrefix[0].length);
-      const r = parseInlineFlow(rest, _flowDepth + 1, _line);
+      const trimmedRest = rest.trim();
+      const terminator = trimmedRest === '' || trimmedRest.startsWith('}') || trimmedRest.startsWith(']') || trimmedRest.startsWith(',');
+      const r = terminator ? { value: '', endPos: 0 } : parseInlineFlow(rest, _flowDepth + 1, _line);
       let val = r.value;
       if (val === undefined) val = parseScalar(rest);
       let fullTag;
@@ -643,8 +879,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         if (rawTag.startsWith('!!')) {
           // Unknown !! tag: use resolved val (backward compat)
         } else {
-          // Unknown ! tag: re-parse as plain scalar (backward compat)
-          return { value: track(parseScalar(s)), endPos: s.length };
+          // Unknown ! tag: the content after the tag is the value (unresolved).
+          const rawContent = s.slice(tagPrefix[0].length, tagPrefix[0].length + r.endPos);
+          const cval = rest.startsWith('&') || rest.startsWith('*') ? val : tagContentValue(rawContent);
+          return { value: track(cval === undefined ? parseScalar(rest) : cval), endPos: tagPrefix[0].length + r.endPos };
         }
       } else {
         val = type.construct(String(val));
@@ -661,7 +899,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       }
       if (close > 0) {
         const inner = s.slice(1, close);
-        return { value: track(unescapeYaml(inner)), endPos: close + 1 };
+        return { value: track(unescapeYaml(foldFlowScalar(inner))), endPos: close + 1 };
       }
     }
     if (s.startsWith("'")) {
@@ -672,28 +910,267 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         if (s[pos] === "'") { close = pos; break; }
         pos++;
       }
-      if (close > 0) return { value: track(s.slice(1, close).replace(/''/g, "'")), endPos: close + 1 };
+      if (close > 0) return { value: track(foldFlowScalar(s.slice(1, close)).replace(/''/g, "'")), endPos: close + 1 };
     }
-    let end = s.search(/[,})\]]/);
-    if (end < 0) return { value: track(parseScalar(s)), endPos: s.length };
+    let end = _blockValue ? -1 : s.search(/[,})\]]/);
+    let commentStart = s.search(/\n[ \t]*#/);
+    const sameLineComment = s.search(/(^|[ \t])#[^\n]*/);
+    if (sameLineComment >= 0 && (commentStart < 0 || sameLineComment < commentStart)) commentStart = sameLineComment;
+    if (commentStart >= 0 && (end < 0 || commentStart < end)) end = commentStart;
+    if (end < 0) {
+      if (_inValue && s.indexOf('\n') >= 0 && findKeySep(s) >= 0)
+        throw new YAMLException('YAML: missing separating comma in flow mapping');
+      return { value: track(parseScalar(s)), endPos: s.length };
+    }
     if (end === 0) return { value: track(parseScalar(s)), endPos: s.length };
     let raw = s.slice(0, end);
+    if (_inValue && raw.indexOf('\n') >= 0 && findKeySep(raw) >= 0)
+      throw new YAMLException('YAML: missing separating comma in flow mapping');
     if (raw.endsWith(' ')) raw = raw.trimEnd();
     return { value: track(parseScalar(raw)), endPos: end };
   }
 
   function parseInlineValue(str) {
-    const r = parseInlineFlow(str);
+    const r = parseInlineFlow(str, 0, 0, false, true);
     if (r.value !== undefined) return r.value;
     return track(parseScalar(str));
   }
 
+  // Extract a block scalar (| or >) starting at index `start` in `sourceLines`.
+  // The indicator line (e.g. `|2-`) may carry an explicit indentation digit and
+  // Parse a block scalar header (e.g. `|`, `|2-`, `|-2`, `|+2`, `>1-`) into
+  // { style, ind, chomp }. Returns null when the header is invalid. The
+  // indentation digit and chomping indicator may appear in either order.
+  function parseBSHeader(h) {
+    const m = h.match(/^(\||>)([0-9+\-]*)$/);
+    if (!m) return null;
+    const tail = m[2];
+    const style = m[1];
+    if (tail === '') return { style, ind: '', chomp: '' };
+    if (/^[0-9]+$/.test(tail)) {
+      if (tail.length > 1 || tail === '0') return null;
+      return { style, ind: tail, chomp: '' };
+    }
+    if (/^[\-+]$/.test(tail)) return { style, ind: '', chomp: tail };
+    const a = tail.match(/^(\d)([\-+])$/);
+    if (a) return { style, ind: a[1], chomp: a[2] };
+    const b = tail.match(/^([\-+])(\d)$/);
+    if (b) return { style, ind: b[2], chomp: b[1] };
+    return null;
+  }
+
+  // Port of js-yaml's getBlockValue(): given the raw content region (lines
+  // with indentation intact) plus contentIndent and chomping, folds or keeps
+  // the block scalar content exactly like the reference implementation.
+  function blockValueFromRegion(region, contentIndent, chomping, folded) {
+    const textIndent = contentIndent < 0 ? 0 : contentIndent;
+    const lines = region === '' ? [] : (region.endsWith('\n') ? region.slice(0, -1) : region).split('\n');
+    let result = '';
+    let didReadContent = false;
+    let emptyLines = 0;
+    let atMoreIndented = false;
+    for (const line of lines) {
+      let column = 0;
+      while (column < textIndent && line.charCodeAt(column) === 32) column++;
+      if (contentIndent < 0 || column >= line.length) { emptyLines++; continue; }
+      const content = line.slice(textIndent);
+      const first = content.charCodeAt(0);
+      if (folded) {
+        if (first === 32 || first === 9) {
+          atMoreIndented = true;
+          result += '\n'.repeat(didReadContent ? 1 + emptyLines : emptyLines);
+        } else if (atMoreIndented) {
+          atMoreIndented = false;
+          result += '\n'.repeat(emptyLines + 1);
+        } else if (emptyLines === 0) {
+          if (didReadContent) result += ' ';
+        } else result += '\n'.repeat(emptyLines);
+      } else {
+        result += '\n'.repeat(didReadContent ? 1 + emptyLines : emptyLines);
+      }
+      result += content;
+      didReadContent = true;
+      emptyLines = 0;
+    }
+    if (chomping === 3) result += '\n'.repeat(didReadContent ? 1 + emptyLines : emptyLines);
+    else if (chomping !== 2) { if (didReadContent) result += '\n'; }
+    return result;
+  }
+
+  // Port of js-yaml's flow-scalar folding (skipFoldedBreaks/foldedBreaks).
+  function foldedBreaks(count) {
+    if (count === 1) return ' ';
+    return '\n'.repeat(count - 1);
+  }
+  function skipFoldedBreaksRaw(input, position, end) {
+    let breaks = 0;
+    while (position < end) {
+      const ch = input.charCodeAt(position);
+      if (ch === 10) { breaks++; position++; }
+      else if (ch === 13) { breaks++; position++; if (input.charCodeAt(position) === 10) position++; }
+      else if (ch === 32 || ch === 9) position++;
+      else break;
+    }
+    return { position, breaks };
+  }
+  function foldFlowScalar(input) {
+    let result = '';
+    let position = 0;
+    let captureStart = 0;
+    let captureEnd = 0;
+    const end = input.length;
+    while (position < end) {
+      const ch = input.charCodeAt(position);
+      if (ch === 92) {
+        const escaped = input.charCodeAt(position + 1);
+        if (escaped === 10 || escaped === 13) {
+          // Line continuation: the backslash and the line break (plus the
+          // following separation whitespace) are removed entirely.
+          result += input.slice(captureStart, position);
+          position = skipFoldedBreaksRaw(input, position + 1, end).position;
+        } else {
+          // Preserve the backslash and the escaped char so unescapeYaml can
+          // translate the escape sequence afterwards.
+          result += input.slice(captureStart, position + 2);
+          position += 2;
+        }
+        captureStart = captureEnd = position;
+      } else if (ch === 10 || ch === 13) {
+        result += input.slice(captureStart, captureEnd);
+        const fold = skipFoldedBreaksRaw(input, position, end);
+        result += foldedBreaks(fold.breaks);
+        position = captureStart = captureEnd = fold.position;
+      } else {
+        position++;
+        if (ch !== 32 && ch !== 9) captureEnd = position;
+      }
+    }
+    return result + input.slice(captureStart, end);
+  }
+
+  // True when the flow construct at the start of `s` is closed (quotes matched,
+  // brackets balanced) so no continuation lines are needed.
+  function flowClosed(s) {
+    let quote = null;
+    let depth = 0;
+    for (let k = 0; k < s.length; k++) {
+      const ch = s[k];
+      if (quote) {
+        if (quote === '"') {
+          if (ch === '\\') { k++; continue; }
+          if (ch === '"') quote = null;
+        } else {
+          if (ch === "'" && s[k + 1] === "'") { k++; continue; }
+          if (ch === "'") quote = null;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === '[' || ch === '{') depth++;
+      else if (ch === ']' || ch === '}') { depth--; if (depth < 0) return true; }
+    }
+    if (quote) return false;
+    return depth <= 0;
+  }
+
+  // Assemble an unclosed flow value together with its continuation lines.
+  function gatherFlowValue(valStr, ls, i, keyIndent) {
+    let joined = valStr;
+    let idx = i + 1;
+    while (idx < ls.length && !flowClosed(joined)) {
+      const l = ls[idx];
+      const t = l.trim();
+      if (t === '') { joined += '\n' + l; idx++; continue; }
+      let lindent = 0;
+      while (lindent < l.length && l[lindent] === ' ') lindent++;
+      if (lindent > keyIndent) { joined += '\n' + l; idx++; continue; }
+      break;
+    }
+    return { full: joined, next: idx - 1 };
+  }
+
+  // Extract a block scalar (| or >) starting at index `start` in `sourceLines`.
+  // The indicator line (e.g. `|2-`) may carry an explicit indentation digit and
+  // chomping modifier. Returns { text, next } where next is the index after the
+  // consumed content, or null if no block content follows.
+  function extractBlockScalar(indicator, sourceLines, start, baseIndent, keyIndent, rootMode) {
+    const m = parseBSHeader(indicator);
+    const style = m.style;
+    const chomp = m.chomp;
+    const detectedIndent = m.ind !== '';
+    const parentIndent = rootMode ? 0 : baseIndent + 1;
+    let contentIndent = detectedIndent ? baseIndent + parseInt(m.ind, 10) : -1;
+    if (detectedIndent && contentIndent === 0)
+      throw err('block scalar explicit indentation indicator cannot be 0');
+
+    // Region extraction mirrors js-yaml's readBlockScalar(): content indent is
+    // detected from the first non-empty line more indented than the parent;
+    // whitespace-only lines never terminate the block.
+    let maxLeadingIndent = 0;
+    let region = '';
+    let i = start;
+    while (i < sourceLines.length) {
+      const line = sourceLines[i];
+      // The final empty element produced by splitting a trailing line break is
+      // not content; js-yaml's valueEnd stops right after the last consumed
+      // line break, so it is never included in the region.
+      if (line === '' && i === sourceLines.length - 1) break;
+      let column = 0;
+      while (column < line.length && line[column] === ' ') column++;
+      const wsOnly = line.trim() === '';
+      if (wsOnly) {
+        if (!detectedIndent && contentIndent === -1) maxLeadingIndent = Math.max(maxLeadingIndent, column);
+        region += line + '\n';
+        i++;
+        continue;
+      }
+      if (column < line.length && line[column] === '\t' && column < parentIndent)
+        throw err('Tab characters are not allowed for indentation in YAML 1.2', column);
+      if (contentIndent === -1) {
+        if (column < maxLeadingIndent)
+          throw err('bad indentation of a mapping entry');
+        if (column < parentIndent) break;
+        contentIndent = column;
+      }
+      if (column < contentIndent) break;
+      region += line + '\n';
+      i++;
+    }
+
+    const text = blockValueFromRegion(region, contentIndent, chomp === '-' ? 2 : chomp === '+' ? 3 : 1, style === '>');
+    return { text, next: i };
+  }
+
   // Pre-scan for anchors at all levels
   let _anchoring = false;
+  const bsStack = [];
+  const bsHeaderRe = /:\s*(\||>)[0-9+\-]*\s*$|^\s*-\s+(\||>)[0-9+\-]*\s*$/;
+  const rootIsBlockScalar = contentLines.length > 0 && /^(\||>)[0-9+\-]*$/.test(contentLines[0].trim());
+  let preFlowOpen = null;
   for (let i = 0; i < contentLines.length; i++) {
     currentLine = i;
     const line = contentLines[i];
     const trimmed = line.trim();
+    if (preFlowOpen !== null) {
+      preFlowOpen = flowClosed(preFlowOpen + '\n' + line) ? null : preFlowOpen + '\n' + line;
+      continue;
+    }
+    let ind;
+    try { ind = getIndent(line); }
+    catch (e) { continue; } // a line starting with a tab is scalar continuation content
+    if (trimmed !== '') {
+      if (rootIsBlockScalar && i > 0) continue;
+      while (bsStack.length > 0 && ind <= bsStack[bsStack.length - 1]) bsStack.pop();
+      if (bsStack.length > 0) continue; // inside a block scalar — anchors there are plain text
+      if (bsHeaderRe.test(line)) bsStack.push(ind);
+      let flowProbe = trimmed;
+      const cidx = findKeySep(line);
+      if (cidx >= 0) flowProbe = line.slice(cidx + 1).trim();
+      if ((flowProbe.startsWith('"') || flowProbe.startsWith("'") || flowProbe.startsWith('[') || flowProbe.startsWith('{')) && !flowClosed(flowProbe)) {
+        preFlowOpen = flowProbe;
+        continue;
+      }
+    }
     if (trimmed.startsWith('&') && trimmed.includes(' ')) {
       if (_anchoring) continue; // guard re-entrancy
       _anchoring = true;
@@ -723,7 +1200,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   }
   _anchoring = false;
 
-  function parseBlock(startIdx, baseIndent, sourceLines, blockDepth) {
+  function parseBlock(startIdx, baseIndent, sourceLines, blockDepth, stopAtQuestionKey) {
     if (blockDepth === undefined) blockDepth = 0;
     if (cfg.maxDepth > 0 && blockDepth > cfg.maxDepth)
       throw err('nesting depth exceeds limit (' + cfg.maxDepth + ')');
@@ -739,42 +1216,111 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     const seq = [];
     let inSeq = false;
     let i = startIdx;
+    let lastInlineKey;
+    let lastInlineKeyIndent = -1;
+    let lastInlineScalar;
+    let lastInlineInterrupted = false;
+    let lastKeyIndent = -1;
+    let seqDashIndent = -1;
 
     while (i < ls.length) {
       currentLine = i;
       const line = ls[i];
       const indent = getIndent(line);
-      if (indent < baseIndent) break;
       const trimmed = line.trim();
-      if (trimmed === '' || trimmed.startsWith('#')) { i++; continue; }
-      if (trimmed === '...') break;
+      if (trimmed === '' || trimmed.startsWith('#')) { if (trimmed.startsWith('#') && typeof lastInlineScalar === 'string') lastInlineInterrupted = true; i++; continue; }
+      if (indent < baseIndent) break;
+      if (trimmed === '...' || trimmed.startsWith('... ') || trimmed.startsWith('...\t')) {
+        if (trimmed === '...') break;
+        throw err('unexpected content after a document end marker');
+      }
+      if (stopAtQuestionKey && indent === baseIndent && (trimmed.startsWith('? ') || trimmed === '?')) break;
 
-      if (trimmed.startsWith('- ')) {
+      if (trimmed.startsWith('- ') || trimmed === '-') {
+        if (line[indent] === '\t')
+          throw err('Tab characters are not allowed for indentation in YAML 1.2', indent);
         inSeq = true;
-        const itemContent = trimmed.slice(2);
-        const subIndent = indent + 2;
+        if (seq.length > 0 && indent !== seqDashIndent)
+          throw err('bad indentation of a sequence entry');
+        if (seq.length === 0 && lastKeyIndent >= 0 && indent !== lastKeyIndent)
+          throw err('bad indentation of a sequence entry');
+        seqDashIndent = indent;
+        lastInlineScalar = undefined;
+        lastInlineInterrupted = false;
+        const dashContent = trimmed === '-' ? '' : trimmed.slice(2);
+        const subIndent = indent + 1;
 
         const itemLines = [];
         let j = i + 1;
         while (j < ls.length) {
+          const t = ls[j].trim();
+          if (t === '') { itemLines.push(ls[j]); j++; continue; }
           const nindent = getIndent(ls[j]);
           if (nindent < subIndent) break;
-          if (ls[j].trim() === '' || ls[j].trim().startsWith('#')) { j++; continue; }
-          if (ls[j].trimStart().startsWith('- ') && nindent === indent) break;
+          if (t.startsWith('#')) { itemLines.push(ls[j]); j++; continue; }
+          const nt = ls[j].trimStart();
+          if ((nt === '-' || nt.startsWith('- ')) && nindent === indent) break;
           itemLines.push(ls[j]);
           j++;
         }
+        while (itemLines.length > 0 && itemLines[itemLines.length - 1].trim() === '') itemLines.pop();
 
-        const colonIdxItem = findKeySep(itemContent);
-        const isMappingItem = colonIdxItem >= 0 && (itemContent[colonIdxItem + 1] === ' ' || itemLines.length > 0);
+        const bsH = parseBSHeader(dashContent.replace(/\s*#.*$/, '').trim());
+        if (bsH) {
+          const bs = extractBlockScalar(dashContent.replace(/\s*#.*$/, '').trim(), ls, i + 1, indent, indent);
+          seq.push(track(bs.text));
+          i = bs.next;
+          continue;
+        }
+
+        if (dashContent.trim() === '') {
+          seq.push(track(null));
+          i = j - 1;
+        } else if (dashContent.trim().startsWith('#')) {
+          seq.push(track(null));
+          i = j - 1;
+        } else {
+        const colonIdxItem = findKeySep(dashContent);
+        const isMappingItem = colonIdxItem >= 0 && (dashContent[colonIdxItem + 1] === ' ' || itemLines.length > 0);
+        let itemDedent;
         if (isMappingItem) {
-          const itemYaml = [itemContent, ...itemLines.map(l => l.slice(subIndent))].join('\n');
+          // Keys of a mapping item sit at indent+2; deeper lines are their values.
+          itemDedent = indent + 2;
+        } else {
+          // Non-mapping continuation: dedent to the shallowest content line.
+          itemDedent = subIndent;
+          for (const il of itemLines) {
+            if (il.trim() === '') continue;
+            const gi = getIndent(il);
+            if (itemDedent === subIndent || gi < itemDedent) itemDedent = gi;
+          }
+        }
+        const dashAnchorMatch = dashContent.match(/^&([^\s,\[\]{}]+)(\s+.*)?$/);
+        if (dashAnchorMatch) {
+          const rest = dashAnchorMatch[2] ? dashAnchorMatch[2].trim() : '';
+          let value;
+          if (rest === '') value = track(null);
+          else if (rest.startsWith('*')) {
+            const av = resolveAlias(rest.slice(1).trim());
+            value = track(av === undefined ? rest : av);
+          } else value = track(parseInlineValue(rest));
+          setAnchor(dashAnchorMatch[1], value);
+          seq.push(value);
+        } else if (dashContent.startsWith('*')) {
+          const av = resolveAlias(dashContent.slice(1).replace(/[ \t]#.*$/, '').trim());
+          seq.push(track(av === undefined ? dashContent : av));
+        } else if (dashContent.trimStart().startsWith('-')) {
+          const itemYaml = [dashContent, ...itemLines.map(l => l.slice(itemDedent))].join('\n');
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state)));
+        } else if (isMappingItem) {
+          const itemYaml = [dashContent, ...itemLines.map(l => l.slice(itemDedent))].join('\n');
           seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state)));
         } else if (itemLines.length === 0) {
-          seq.push(track(parseInlineValue(itemContent)));
+          seq.push(track(parseInlineValue(dashContent)));
         } else {
-          const itemYaml = itemLines.map(l => l.slice(subIndent)).join('\n');
+          const itemYaml = [dashContent, ...itemLines.map(l => l.slice(itemDedent))].join('\n');
           seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state)));
+        }
         }
         i = j - 1;
       } else {
@@ -801,30 +1347,125 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           if (close > 0) { colonIdx = indent + afterIndent.indexOf(':', close); key = afterIndent.slice(1, close).replace(/''/g, "'"); }
         }
         let valStr;
+        let explicitValueMode = false;
         // Explicit key syntax: ? key \n : value  (check BEFORE colon detection)
-        if (afterIndent.startsWith('? ')) {
-          key = afterIndent.slice(2);
-          const nextLine = i + 1 < ls.length ? ls[i + 1].trim() : '';
-          if (nextLine.startsWith(': ')) {
-            valStr = nextLine.slice(2).trim();
-            i++; // consume the : line
-          } else if (nextLine === ':') {
-            valStr = '';
-            i++; // consume the : line
+        if (afterIndent.startsWith('? ') || trimmed === '?') {
+          if (lastKeyIndent >= 0 && indent !== lastKeyIndent)
+            throw err('bad indentation of a mapping entry');
+          lastKeyIndent = indent;
+          lastInlineScalar = undefined;
+          const keyStart = (trimmed === '?' ? '' : afterIndent.slice(2)).replace(/\s*#.*$/, '');
+
+          // Gather the key (may span several lines) and locate the ':' value line.
+          const keyLines = [];
+          let vi = i + 1;
+          while (vi < ls.length) {
+            const t = ls[vi].trim();
+            const ki = getIndent(ls[vi]);
+            if (t === '' || t.startsWith('#')) { keyLines.push(ls[vi]); vi++; continue; }
+            if (ki === indent && t.startsWith(':')) break;
+            if (ki === indent && t.startsWith('?')) break;
+            if (ki === indent && findKeySep(t) >= 0) break;
+            if (ki < indent) break;
+            keyLines.push(ls[vi]);
+            vi++;
+          }
+
+          // Assemble the key node from keyStart (+ continuation lines).
+          const keyStartTrim = keyStart.trim();
+          let keyNode;
+          if (keyStartTrim !== '' && !/^[-\[{&*>!]/.test(keyStartTrim)) {
+            keyNode = keyStartTrim;
+          } else if (keyStartTrim.startsWith('|') || keyStartTrim.startsWith('>')) {
+            keyNode = extractBlockScalar(keyStartTrim, ls, i + 1, indent, indent).text;
           } else {
+            const content = [keyStart, ...keyLines].filter(l => l.trim() !== '' && !l.trim().startsWith('#'));
+            const joined = content.join('\n').trim();
+            if (joined === '') keyNode = null;
+            else if (joined.startsWith('-')) keyNode = yamlToJS(joined, cfg, _depth + 1, _schema, state);
+            else if (joined.startsWith('[') || joined.startsWith('{')) {
+              const fr = parseInlineFlow(joined);
+              keyNode = fr.value !== undefined ? fr.value : parseScalar(joined);
+            } else keyNode = parseScalar(joined);
+          }
+          if (typeof keyNode === 'string' && keyNode.startsWith('"') && keyNode.endsWith('"') && keyNode.length >= 2)
+            keyNode = unescapeYaml(keyNode.slice(1, -1));
+          else if (typeof keyNode === 'string' && keyNode.startsWith("'") && keyNode.endsWith("'") && keyNode.length >= 2)
+            keyNode = keyNode.slice(1, -1).replace(/''/g, "'");
+          key = typeof keyNode === 'string' ? keyNode : JSON.stringify(keyNode);
+
+          if (vi >= ls.length || !ls[vi].trim().startsWith(':')) {
             // Key with no value (e.g. in !!set)
             addKey(key);
             safeAssign(result, key, track(null));
-            i++;
+            i = vi - 1;
             continue;
           }
+          const colonTrim = ls[vi].trim();
+          valStr = colonTrim === ':' ? '' : colonTrim.slice(1).trim();
+          explicitValueMode = true;
+          i = vi; // the ':' line — shared value handling below starts content at i+1
         } else {
           if (colonIdx < 0) colonIdx = findKeySep(line, indent);
-          if (colonIdx < 0) { i++; continue; }
+          if (colonIdx < 0) {
+            // Anchor definition (&name or &name value) — registered by the pre-scan.
+            // Not allowed between sequence items.
+            if (/^&[^\s,\[\]{}]+(\s|$)/.test(trimmed)) {
+              if (inSeq && seq.length > 0) throw err('anchor cannot appear between sequence items');
+              i++; continue;
+            }
+            // A plain line with no key separator is only legal as a continuation of the
+            // previous inline plain-scalar value (no comment/blank interrupting).
+            if (typeof lastInlineScalar === 'string' && !lastInlineInterrupted) {
+              let n = i + 1;
+              const cont = [line];
+              while (n < ls.length) {
+                const t = ls[n].trim();
+                if (t === '') { cont.push(ls[n]); n++; continue; }
+                const ni = getIndent(ls[n]);
+                if (ni <= lastInlineKeyIndent) break;
+                if (t.startsWith('#')) { lastInlineInterrupted = true; break; }
+                if (findKeySep(ls[n].slice(ni)) >= 0) throw err('bad indentation of a mapping entry');
+                cont.push(ls[n]);
+                n++;
+              }
+              const joined = lastInlineScalar + '\n' + cont.join('\n');
+              safeAssign(result, lastInlineKey, track(parseScalar(joined)));
+              lastInlineScalar = undefined;
+              lastInlineKey = undefined;
+              i = n;
+              continue;
+            }
+            throw err('unexpected content: expected a mapping key or sequence item');
+          }
           if (key === undefined) key = line.slice(indent, colonIdx).trim();
+          const keyTagM = key.match(/^(![^\s]+)[ \t]+(.*)$/);
+          if (keyTagM) key = keyTagM[2].trim() === '' ? '' : keyTagM[2].trim();
           valStr = line.slice(colonIdx + 1).trim();
         }
+        if (line[indent] === '\t')
+          throw err('Tab characters are not allowed for indentation in YAML 1.2', indent);
         currentColumn = colonIdx >= 0 ? colonIdx + 1 : 0;
+
+        // Resolve alias keys (*name) to their anchored value
+        if (typeof key === 'string' && key.startsWith('*')) {
+          const k = resolveAlias(key.slice(1).trim());
+          if (k === undefined) { /* unknown anchor — keep literal */ }
+          else if (typeof k === 'string') key = k;
+          else if (k !== null && (typeof k === 'number' || typeof k === 'boolean')) key = String(k);
+        } else if (typeof key === 'string' && key.startsWith('&')) {
+          // &anchor in front of a key (e.g. &anchor 'key' : val) — strip it, anchor the key
+          const km = key.match(/^&([^\s,\[\]{}]+)\s*(.*)/);
+          if (km) {
+            const restKey = km[2].trim();
+            if (restKey !== '') {
+              key = restKey;
+              if ((key.startsWith('"') && key.endsWith('"') && key.length >= 2)) key = unescapeYaml(key.slice(1, -1));
+              else if ((key.startsWith("'") && key.endsWith("'") && key.length >= 2)) key = key.slice(1, -1).replace(/''/g, "'");
+              setAnchor(km[1], track(key));
+            }
+          }
+        }
 
         // Track merge keys to catch override attempts
         if (key === '<<') {
@@ -832,64 +1473,36 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           for (const existingKey of seenKeys) mergeOverrideKeys.add(existingKey);
         }
 
+        // Mapping keys at one block level must share the same indentation
+        if (lastKeyIndent >= 0 && indent !== lastKeyIndent)
+          throw err('bad indentation of a mapping entry');
+        lastKeyIndent = indent;
+
         // Support explicit block scalar indent indicators (|1, |2, >1, >2, etc.)
         const valForBlock = valStr.replace(/^![^\s]+\s*/, '');
-        const blockMatch = valForBlock.match(/^(\||>)(\d*)([\-+]?)$/);
-        if (blockMatch && valForBlock.trim() === blockMatch[0]) {
-          const blockLines = [];
-          let j = i + 1;
-          let contentIndent = null;
-          while (j < ls.length) {
-            const nindent = getIndent(ls[j]);
-            if (nindent <= indent && ls[j].trim() !== '') break;
-            if (ls[j].trim() === '' || ls[j].trim().startsWith('#')) { blockLines.push(''); j++; continue; }
-            if (contentIndent === null) contentIndent = nindent;
-            blockLines.push(ls[j].slice(contentIndent));
-            j++;
-          }
-          const style = blockMatch[0];
-          const chomp = style.endsWith('-') ? 'strip' : style.endsWith('+') ? 'keep' : 'clip';
-          const baseStyle = style[0];
-          let text;
-          if (baseStyle === '|') {
-            text = blockLines.join('\n');
-            if (chomp === 'keep') text = text + '\n';
-            else if (chomp !== 'strip') text = text + '\n';
-            text = chomp === 'strip' ? text.replace(/\n+$/, '') : text;
-          } else {
-            const folded = [];
-            let li = 0;
-            while (li < blockLines.length) {
-              if (blockLines[li] === '') {
-                folded.push('');
-                li++;
-              } else {
-                let accum = blockLines[li];
-                li++;
-                while (li < blockLines.length && blockLines[li] !== '') {
-                  accum += ' ' + blockLines[li];
-                  li++;
-                }
-                folded.push(accum);
-              }
-            }
-            text = folded.join('\n');
-            if (chomp === 'keep') text = text.replace(/\n*$/, '') + '\n';
-            else if (chomp === 'strip') text = text.replace(/\n+$/, '');
-            else text = text.replace(/\n*$/, '\n');
-          }
+        const bsBody = valForBlock.replace(/\s*#.*$/, '').trim();
+        const bsHeader = parseBSHeader(bsBody);
+        if (valForBlock.startsWith('|') || valForBlock.startsWith('>')) {
+          if (!bsHeader)
+            throw err('a line break is expected after the block scalar indicator');
+          lastInlineScalar = undefined;
+          const bs = extractBlockScalar(bsBody, ls, i + 1, indent, indent);
           addKey(key);
-          safeAssign(result, key, track(text));
-          i = j - 1;
-          i++;
+          safeAssign(result, key, track(bs.text));
+          i = bs.next;
           continue;
         }
 
-        const anchorMatch = valStr.match(/^&([a-zA-Z_][a-zA-Z0-9_-]*)\s*(.*)/);
+        const anchorMatch = valStr.match(/^&([^\s,\[\]{}]+)\s*(.*)/);
         if (anchorMatch) {
+          lastInlineScalar = undefined;
           const aname = anchorMatch[1];
           const rest = anchorMatch[2].trim();
           if (rest === '' && i + 1 < ls.length && getIndent(ls[i + 1]) > indent) {
+            let firstContent = i + 1;
+            while (firstContent < ls.length && (ls[firstContent].trim() === '' || ls[firstContent].trim().startsWith('#'))) firstContent++;
+            if (firstContent < ls.length && /^&[^\s,\[\]{}]+[ \t]/.test(ls[firstContent].trim()) && findKeySep(ls[firstContent].trim()) < 0)
+              throw err('bad indentation of a mapping entry');
             const sub = parseBlock(i + 1, indent + 2, ls, blockDepth + 1);
             setAnchor(aname, track(sub));
             addKey(key);
@@ -911,8 +1524,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           continue;
         }
 
-        const aliasAnchorMatch = valStr.match(/^&([a-zA-Z_][a-zA-Z0-9_-]*)\s+\*([a-zA-Z_][a-zA-Z0-9_-]*)/);
+        const aliasAnchorMatch = valStr.match(/^&([^\s,\[\]{}]+)\s+\*([^\s,\[\]{}]+)/);
         if (aliasAnchorMatch) {
+          lastInlineScalar = undefined;
           const aname = aliasAnchorMatch[1];
           const srcAnchor = aliasAnchorMatch[2];
           const val = track(resolveAlias(srcAnchor));
@@ -924,28 +1538,66 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         }
 
         if (valStr === '' || valStr.startsWith('#')) {
+          lastInlineScalar = undefined;
           let nextNonBlank = i + 1;
           while (nextNonBlank < ls.length && (ls[nextNonBlank].trim() === '' || ls[nextNonBlank].trim().startsWith('#'))) nextNonBlank++;
-          if (nextNonBlank >= ls.length || getIndent(ls[nextNonBlank]) <= indent) {
+          if (nextNonBlank >= ls.length || (contentIndent(ls[nextNonBlank]) < (explicitValueMode ? indent : indent + 1) && !ls[nextNonBlank].trim().startsWith('-'))) {
             addKey(key);
             safeAssign(result, key, track(null));
             i++;
             continue;
           }
-          const sub = parseBlock(i + 1, indent + 2, ls, blockDepth + 1);
-          addKey(key);
-          safeAssign(result, key, track(sub));
-          let next = i + 1;
-          while (next < ls.length) {
-            const t = ls[next].trim();
-            if (t === '' || t.startsWith('#')) { next++; continue; }
-            if (getIndent(ls[next]) >= indent + 2) { next++; continue; }
+          // The block indent is derived from the first content line so that
+          // tab-indented scalar values (tabs-as-separation) still nest.
+          const nestedBase = explicitValueMode ? indent : contentIndent(ls[nextNonBlank]);
+          // blockEnd: first line not nested under this key (blanks/comments skipped).
+          // A `-` at the key's own indent continues a compact nested sequence;
+          // any other line at that indent starts a sibling entry.
+          let blockEnd = nextNonBlank;
+          while (blockEnd < ls.length) {
+            const t = ls[blockEnd].trim();
+            if (t === '' || t.startsWith('#')) { blockEnd++; continue; }
+            if (explicitValueMode && getIndent(ls[blockEnd]) === indent && (t.startsWith('? ') || t === '?' || t.startsWith(': '))) break;
+            if (getIndent(ls[blockEnd]) === indent && !t.startsWith('-')) break;
+            if (contentIndent(ls[blockEnd]) >= nestedBase) { blockEnd++; continue; }
+            if (getIndent(ls[blockEnd]) === indent && t.startsWith('-')) { blockEnd++; continue; }
             break;
           }
-          i = next - 1;
+          // If the nested block is a plain scalar (no keys/seq/block-scalar), it is the value
+          let isScalarBlock = true;
+          for (let p = nextNonBlank; p < blockEnd; p++) {
+            const t = ls[p].trim();
+            if (t === '' || t.startsWith('#')) continue;
+            const rel = ls[p].slice(nestedBase).trim();
+            if (findKeySep(rel) >= 0 || rel === '-' || rel.startsWith('- ') || /^(\||>)[0-9+\-]*$/.test(rel) || rel.startsWith('? ') || rel.startsWith('&')) { isScalarBlock = false; break; }
+          }
+          if (isScalarBlock) {
+            const folded = ls.slice(i + 1, blockEnd).map(l => l.slice(nestedBase)).join('\n');
+            addKey(key);
+            safeAssign(result, key, track(parseScalar(folded)));
+            i = blockEnd - 1;
+          } else {
+            const sub = parseBlock(i + 1, nestedBase, ls, blockDepth + 1, explicitValueMode);
+            addKey(key);
+            safeAssign(result, key, track(sub));
+            i = blockEnd - 1;
+          }
         } else {
+          let val = valStr;
+          let consumed = i;
+          if (flowClosed(valStr) === false && (valStr.startsWith('"') || valStr.startsWith("'") || valStr.startsWith('[') || valStr.startsWith('{'))) {
+            const g = gatherFlowValue(valStr, ls, i, indent);
+            val = g.full;
+            consumed = g.next;
+          }
+          const parsed = parseInlineValue(val);
+          lastInlineScalar = (typeof parsed === 'string' && !/^[\s"'\[\]{}*&!|>]/.test(valStr) && !/^(\||>)[0-9+\-]*$/.test(valStr)) ? parsed : undefined;
+          lastInlineKey = key;
+          lastInlineKeyIndent = indent;
+          lastInlineInterrupted = false;
           addKey(key);
-          safeAssign(result, key, track(parseInlineValue(valStr)));
+          safeAssign(result, key, track(parsed));
+          i = consumed;
         }
       }
       i++;
@@ -960,14 +1612,77 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
 
   const topContent = contentLines.join('\n').trim();
   const top = yamlStr.trim();
+  const rootHeader = contentLines.length > 0 ? contentLines[0].trim() : '';
   let result;
-  if (topContent.startsWith('[') || topContent.startsWith('{')) {
+  if (/^(\||>)[0-9+\-]*$/.test(rootHeader)) {
+    const bs = extractBlockScalar(rootHeader, contentLines, 1, 0, 0, true);
+    result = track(bs.text);
+  } else if (/^![^\s]+$/.test(rootHeader) && contentLines.length > 1) {
+    result = parseBlock(1, 0);
+  } else if (topContent.startsWith('[') || topContent.startsWith('{')) {
     const r = parseInlineFlow(topContent);
-    result = r.value !== undefined ? track(r.value) : track(parseScalar(topContent));
+    const trailRaw = topContent.slice(r.endPos);
+    const trail = trailRaw.trim();
+    if (trail.startsWith(':')) {
+      result = parseBlock(0, 0);
+    } else {
+      let trailValid = true;
+      if (trail !== '' && trail !== '...') {
+        const hashPosInTrail = trailRaw.indexOf('#');
+        const trailIsComment = trail.startsWith('#') && hashPosInTrail >= 0;
+        if (trailIsComment) {
+          const hashPos = r.endPos + hashPosInTrail;
+          const pc = hashPos > 0 ? topContent[hashPos - 1] : '';
+          if (pc !== ' ' && pc !== '\t' && pc !== '\n') trailValid = false;
+        } else {
+          trailValid = false;
+        }
+      }
+      if (!trailValid)
+        throw new YAMLException('YAML: unexpected content after a closed flow collection');
+      result = r.value !== undefined ? track(r.value) : track(parseScalar(topContent));
+    }
   } else if (topContent === '' || topContent === '---' || topContent === '...') {
     result = null;
-  } else if (findKeySep(topContent) < 0 && !topContent.startsWith('- ') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
-    result = track(parseScalar(topContent));
+  } else if (/^!([^\s]*)/.test(topContent)) {
+    // Root-level tagged node: strip the tag and parse the remaining content.
+    const tm = topContent.match(/^(![^\s]*)[ \t]*(.*)$/s);
+    const rawTag = tm[1];
+    let content = tm[2].trim();
+    if (findKeySep(content) >= 0) {
+      result = parseBlock(0, 0);
+    } else {
+      let taggedVal;
+      if (content.startsWith('[') || content.startsWith('{')) {
+        const fr = parseInlineFlow(content);
+        taggedVal = fr.value !== undefined ? fr.value : parseScalar(content);
+      } else if (content === '') {
+        taggedVal = null;
+      } else {
+        taggedVal = parseScalar(content.replace(/[ \t]#[^\n]*$/, '').trim());
+      }
+      let fullTag;
+      if (rawTag.startsWith('!!')) {
+        const expanded = expandTag(rawTag);
+        fullTag = expanded !== rawTag ? expanded : 'tag:yaml.org,2002:' + rawTag.slice(2);
+      } else {
+        fullTag = expandTag(rawTag);
+      }
+      const type = _schema._explicit[fullTag];
+      if (type && typeof taggedVal === 'string') {
+        result = type.construct(taggedVal);
+      } else {
+        result = taggedVal;
+      }
+    }
+  } else if (findKeySep(topContent) < 0 && contentLines[0].trim() !== '-' && !topContent.startsWith('- ') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
+    // A document-end marker on its own line ends the (root scalar) document.
+    let scalarLines = contentLines;
+    for (let i = 1; i < scalarLines.length; i++) {
+      const tt = scalarLines[i].trim();
+      if (tt === '...' || tt.startsWith('... ')) { scalarLines = scalarLines.slice(0, i); break; }
+    }
+    result = track(parseScalar(scalarLines.join('\n')));
   } else {
     result = parseBlock(0, 0);
   }
@@ -1300,11 +2015,11 @@ function expandTagTop(rawTag, tagMap) {
 }
 
 function resolveScalarTop(s, schema, tagMap) {
-  const trimmed = s.trim();
-  const tagMatch = trimmed.match(/^(![^\s]+)\s+/);
+  const trimmed = s.replace(/[ \t]#[^\n]*$/, '').trim();
+  const tagMatch = trimmed.match(/^(![^\s]+)/);
   if (tagMatch) {
     const rawTag = tagMatch[1];
-    const tagVal = trimmed.slice(tagMatch[0].length);
+    const tagVal = trimmed.slice(tagMatch[0].length).trim();
     let fullTag;
     if (rawTag.startsWith('!!')) {
       const expanded = expandTagTop(rawTag, tagMap);
@@ -1314,11 +2029,12 @@ function resolveScalarTop(s, schema, tagMap) {
     }
     const type = schema._explicit[fullTag];
     if (type) return type.construct(tagVal);
-    if (!rawTag.startsWith('!!')) return trimmed;
+    if (!rawTag.startsWith('!!')) return tagVal;
   }
   let val = trimmed;
   if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) return unescapeYaml(val.slice(1, -1));
   if (val.startsWith("'") && val.endsWith("'") && val.length >= 2) return val.slice(1, -1);
+  val = val.replace(/[ \t]#[^\n]*$/, '');
   for (const type of schema._implicit) {
     if (type.resolve && type.resolve(val)) {
       if (type.tag === 'tag:yaml.org,2002:timestamp') continue;
@@ -1703,7 +2419,11 @@ class StreamParser {
     if (colonIdx < 0) colonIdx = findKeySepTop(line, indent);
     if (colonIdx < 0) return null;
     const rawKey = line.slice(indent, colonIdx).trim();
-    if (key === undefined) key = rawKey;
+    if (key === undefined) {
+      key = rawKey;
+      const keyTagM = key.match(/^(![^\s]+)[ \t]+(.*)$/);
+      if (keyTagM) key = keyTagM[2].trim() === '' ? '' : keyTagM[2].trim();
+    }
     const valStr = line.slice(colonIdx + 1).trim();
     return { key, valStr, explicit: false, rawKey, colonIdx };
   }
@@ -1790,11 +2510,16 @@ class StreamParser {
 
     if (seqCtx.pendingItem && indent === seqCtx.indent) {
       seqCtx.pendingItem = false;
+      if (seqCtx.pendingEmpty) {
+        seqCtx.pendingEmpty = false;
+        this._emitScalar(seqCtx, null, '');
+      }
     }
 
     const item = trimmed.slice(2);
     if (item.trim() === '') {
       seqCtx.pendingItem = true;
+      seqCtx.pendingEmpty = true;
       return;
     }
     if (item === '-' || item.startsWith('- ')) {
@@ -1909,7 +2634,7 @@ class StreamParser {
     if (this.cfg.maxDepth > 0 && this.stack.length > this.cfg.maxDepth)
       throw this._err('nesting depth exceeds limit (' + this.cfg.maxDepth + ')');
     const ctx = {
-      kind: 'seq', indent, pendingItem: false, valueAnchor: null, anchor: null,
+      kind: 'seq', indent, pendingItem: false, pendingEmpty: false, valueAnchor: null, anchor: null,
       lastInlineIndex: -1, replaceInline: -1,
       node: this.buffered ? [] : null,
     };
@@ -1934,6 +2659,10 @@ class StreamParser {
     } else {
       if (ctx.pendingItem) {
         ctx.pendingItem = false;
+        if (ctx.pendingEmpty) {
+          ctx.pendingEmpty = false;
+          this._emitScalar(ctx, null, '');
+        }
       }
       if (ctx.anchor) this._registerAnchor(ctx.anchor, ctx.node);
       this._emit('sequenceEnd');
@@ -1998,6 +2727,7 @@ class StreamParser {
     } else if (ctx.kind === 'seq') {
       ctx.node.push(value);
       ctx.pendingItem = false;
+      ctx.pendingEmpty = false;
       ctx.lastInlineIndex = ctx.node.length - 1;
     }
   }
@@ -2023,6 +2753,7 @@ class StreamParser {
       if (top.pendingItem) {
         top.node.push(ctx.node);
         top.pendingItem = false;
+        top.pendingEmpty = false;
       } else if (top.replaceInline >= 0) {
         top.node[top.replaceInline] = ctx.node;
         top.replaceInline = -1;

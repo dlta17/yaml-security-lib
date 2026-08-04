@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { parse, YamlSecurity } from '../src/index.js';
 
-const suiteDir = '/tmp/yaml-test-suite/src';
+const suiteDir = process.env.YAML_SUITE_DIR || '/home/nedal/yaml-test-suite/src';
 const parser = new YamlSecurity();
 
 let passed = 0;
@@ -34,13 +34,24 @@ for (const file of files) {
 
     if (!yaml) continue;
 
-    // Normalize visible space markers and end-of-file marker
-    const cleanYaml = yaml.replace(/␣/g, ' ').replace(/∎\n?$/, '');
+    // Normalize visible space markers, tab markers, trailing-newline markers,
+    // CR markers, BOM markers, and end-of-file marker. The tab glyph is any
+    // number of em-dashes followed by » (deeper tabs use longer dashes).
+    const cleanYaml = yaml
+      .replace(/␣/g, ' ')
+      .replace(/[—–-]*»/g, '\t')
+      .replace(/↵/g, '')
+      .replace(/←/g, '\r')
+      .replace(/⇔/g, '\uFEFF')
+      .replace(/∎\n?$/, '');
 
     const result = parser.parse(cleanYaml);
     if (!result.ok) {
-      if (tc.error) { passed++; continue; }
+      if (tc.fail) { passed++; continue; }
       failed++; failures.push({ file, name, error: result.error }); continue;
+    }
+    if (tc.fail) {
+      failed++; failures.push({ file, name, error: 'expected parse failure but succeeded', actual: JSON.stringify(result.result) }); continue;
     }
 
     if (expectedJson) {

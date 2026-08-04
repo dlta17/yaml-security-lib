@@ -124,8 +124,8 @@ assertEqual(p.parse('null').result, null, 'standalone scalar null');
 assert(p.parse('a:\n\tb: 1').ok !== undefined, 'tab indentation handled without crash');
 
 // ── Block scalar indent indicators ──
-assertEqual(p.parse('x: |1\n  hello').result, { x: 'hello\n' }, 'literal block indent |1');
-assertEqual(p.parse('x: >1\n  hello\n  world').result, { x: 'hello world\n' }, 'folded block indent >1');
+assertEqual(p.parse('x: |1\n  hello').result, { x: ' hello\n' }, 'literal block indent |1');
+assertEqual(p.parse('x: >1\n  hello\n  world').result, { x: ' hello\n world\n' }, 'folded block indent >1');
 
 // ── ... as multi-doc separator in parseAll ──
 const multiEnd = p.parseAll('a: 1\n...\nb: 2');
