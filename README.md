@@ -265,7 +265,7 @@ normal.parse("&a 1\n&b *a\n&c *b\n&d *c\nkey: *d")
 | Node/expansion limits | ✅ | ❌ | ❌ |
 | `maxStringLength` / `maxKeys` | ✅ | ❌ | ❌ |
 | Input size limit (1MB default) | ✅ | ❌ | ❌ |
-| YAML Test Suite score | **245/351** (70%) | ~95% | ~95% |
+| YAML Test Suite score | **313/351** (89%) | ~95% | ~95% |
 | Browser bundle | ✅ (14KB gzip) | ✅ (17KB) | ✅ (26KB) |
 | Dual license (AGPL + Commercial) | ✅ | ❌ (MIT) | ❌ (MIT) |
 | Schema system | ✅ | ✅ | ✅ |
@@ -275,7 +275,7 @@ normal.parse("&a 1\n&b *a\n&c *b\n&d *c\nkey: *d")
 
 ## YAML Test Suite
 
-yaml-security-lib passes **245 of 351** official [YAML Test Suite](https://github.com/yaml/yaml-test-suite) tests (70%), covering all major security-relevant features. The remaining gaps are in edge cases of block scalars, flow collections, and YAML 1.2 type system completeness — none of which affect the security protections.
+yaml-security-lib passes **313 of 351** official [YAML Test Suite](https://github.com/yaml/yaml-test-suite) tests (89%), covering all major security-relevant features. The remaining gaps are in edge cases of block scalars, flow collections, and YAML 1.2 type system completeness — none of which affect the security protections.
 
 ## Schema System
 
