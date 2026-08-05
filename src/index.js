@@ -311,6 +311,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     nodeWeights: new WeakMap(),
   };
   const { anchors, anchorDepths, anchorSources, mergeOverrideKeys, nodeWeights } = state;
+  let currentLine = -1;
+  let currentColumn = -1;
 
   const lines = yamlStr.split('\n');
   while (lines.length > 0 && lines[lines.length - 1].trim() === '' && false) lines.pop();
@@ -318,27 +320,68 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
   // ── Process YAML directives & markers ──
   let docStartIdx = 0;
   const tags = {};
+  let yamlDirectiveSeen = false;
+  let sawDirective = false;
+  let sawDocStart = false;
   while (docStartIdx < lines.length) {
     const raw = lines[docStartIdx];
     const trimmed = raw.trim();
-    if (trimmed === '---' || trimmed.startsWith('--- ') || trimmed === '...' || trimmed.startsWith('... ')) {
-      if (trimmed.startsWith('--- ') && trimmed.length > 4) {
-        lines[docStartIdx] = raw.slice(0, raw.length - trimmed.length) + trimmed.slice(4);
+    if (trimmed === '---' || trimmed.startsWith('--- ') || trimmed.startsWith('---\t') || trimmed === '...' || trimmed.startsWith('... ') || trimmed.startsWith('...\t')) {
+      if (trimmed === '---') { sawDocStart = true; docStartIdx++; continue; }
+      if ((trimmed.startsWith('--- ') || trimmed.startsWith('---\t')) && trimmed.length > 4) {
+        const rest = trimmed.slice(4);
+        // js-yaml sets allowCompact=false when content follows `--- ` on the
+        // same line, so a block collection (mapping/sequence/explicit key) is
+        // illegal there; only scalars, aliases, flow collections and their
+        // tag/anchor properties are allowed.
+        const restNoProp = rest.replace(/^![^\s]*[ \t]*/, '').replace(/^&[^\s]*[ \t]*/, '').replace(/^\*[^\s]*[ \t]*/, '');
+        if (findKeySep(restNoProp) >= 0 || /^[-?][ \t]/.test(restNoProp) || restNoProp === '-' || restNoProp === '?')
+          throw err('end of the stream or a document separator is expected');
+        lines[docStartIdx] = raw.slice(0, raw.length - trimmed.length) + rest;
+        sawDocStart = true;
         break;
       }
-      if (trimmed.startsWith('... ') && trimmed.length > 4) {
+      if (trimmed === '...') { docStartIdx++; continue; }
+      if ((trimmed.startsWith('... ') || trimmed.startsWith('...\t')) && trimmed.length > 4) {
         break;
       }
       docStartIdx++; continue;
     }
     if (trimmed.startsWith('%TAG')) {
+      sawDirective = true;
       const parts = trimmed.split(/\s+/);
-      if (parts.length >= 3) tags[parts[1]] = parts[2];
+      if (parts.length < 3) throw err('invalid %TAG directive: missing handle or prefix');
+      if (!/^![^\s]*$/.test(parts[1])) throw err('invalid %TAG directive: bad handle');
+      tags[parts[1]] = parts[2];
       docStartIdx++; continue;
     }
-    if (trimmed.startsWith('%')) { docStartIdx++; continue; }
+    if (trimmed.startsWith('%YAML')) {
+      sawDirective = true;
+      if (yamlDirectiveSeen) throw err('duplicate %YAML directive');
+      yamlDirectiveSeen = true;
+      const rest = trimmed.slice(5).trim();
+      const commentIdx = rest.search(/[ \t]#/);
+      const version = commentIdx >= 0 ? rest.slice(0, commentIdx).trim() : rest;
+      if (version !== '1.1' && version !== '1.2' && !/^1\.[0-9]+$/.test(version))
+        throw err('invalid %YAML directive: bad version');
+      docStartIdx++; continue;
+    }
+    if (trimmed.startsWith('%')) {
+      sawDirective = true;
+      docStartIdx++; continue;
+    }
     if (trimmed === '' || trimmed.startsWith('#')) { docStartIdx++; continue; }
     break;
+  }
+  // A directive must be followed by a document: a stream that is only
+  // directives/comments (no `---` and no content) is an error.
+  if (sawDirective && !sawDocStart) {
+    let hasContent = false;
+    for (let i = docStartIdx; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t !== '' && !t.startsWith('#')) { hasContent = true; break; }
+    }
+    if (!hasContent) throw err('expected a document after the directive');
   }
   const contentLines = lines.slice(docStartIdx);
 
@@ -409,8 +452,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     return rawTag;
   }
 
-  let currentLine = -1;
-  let currentColumn = -1;
+  // Validate a non-verbatim tag: its suffix must not contain flow indicator
+  // characters (`[ ] { } ,`). Mirrors js-yaml's "tag suffix cannot contain
+  // flow indicator characters".
+  function checkTagSuffix(rawTag) {
+    if (rawTag.startsWith('!<')) return;
+    const suffix = rawTag.startsWith('!!') ? rawTag.slice(2) : rawTag.slice(1);
+    if (/[,\[\]{}]/.test(suffix)) throw new YAMLException('YAML: tag suffix cannot contain flow indicator characters');
+  }
 
   // Find the first `:` that acts as a key-value separator:
   // followed by space, tab, EOL, `#`, `}`, `]` — but not inside a quoted string
@@ -437,6 +486,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       }
       if (ch === '[' || ch === '{') { flowDepth++; continue; }
       if (ch === ']' || ch === '}') { flowDepth = Math.max(0, flowDepth - 1); continue; }
+      if (ch === '#' && (i === (start || 0) || str[i - 1] === ' ' || str[i - 1] === '\t')) return -1;
       if (ch === ':' && flowDepth === 0) {
         if (i + 1 >= str.length || str[i + 1] === ' ' || str[i + 1] === '\t' || str[i + 1] === '\n' || str[i + 1] === '\r' || str[i + 1] === '}' || str[i + 1] === ']')
           return i;
@@ -582,8 +632,45 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     return c;
   }
 
+  // Find the first real comment marker (`#` preceded by whitespace or at line
+  // start) in a plain-scalar line, ignoring quotes. Returns the content before
+  // it (trimmed of trailing whitespace) and whether a comment was found.
+  function splitPlainComment(line) {
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '#') {
+        if (i === 0 || line[i - 1] === ' ' || line[i - 1] === '\t') {
+          return { content: line.slice(0, i).replace(/[ \t]+$/, ''), commented: true };
+        }
+      }
+    }
+    return { content: line, commented: false };
+  }
+
+  // True when the line starts with a quote and the matching closing quote is on
+  // the same line (a closed single-line quoted scalar).
+  function quotedClosedOnLine(s) {
+    const q = s[0];
+    if (q !== '"' && q !== "'") return false;
+    let i = 1;
+    while (i < s.length) {
+      if (q === '"') {
+        if (s[i] === '\\') { i += 2; continue; }
+        if (s[i] === '"') return true;
+      } else {
+        if (s[i] === "'" && s[i + 1] === "'") { i += 2; continue; }
+        if (s[i] === "'") return true;
+      }
+      i++;
+    }
+    return false;
+  }
+
   function parseScalar(s) {
     let trimmed = s.trim();
+
+    // A plain scalar node cannot start with `%` (js-yaml canStartPlainScalar
+    // rejects it), so a directive-form line at a node position is leftover.
+    if (trimmed.startsWith('%')) throw err('unexpected content: a plain scalar cannot start with %');
 
     // Quoted scalar (possibly spanning several lines): fold inside the quotes.
     if (trimmed.startsWith('"') || trimmed.startsWith("'")) {
@@ -599,6 +686,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         if (close > 0) {
           return unescapeYaml(foldFlowScalar(trimmed.slice(1, close)));
         }
+        throw new YAMLException('YAML: double-quoted scalar is not closed');
       } else {
         while (pos < trimmed.length) {
           if (trimmed[pos] === "'" && trimmed[pos + 1] === "'") { pos += 2; continue; }
@@ -608,6 +696,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         if (close > 0) {
           return foldFlowScalar(trimmed.slice(1, close)).replace(/''/g, "'");
         }
+        throw new YAMLException('YAML: single-quoted scalar is not closed');
       }
     }
 
@@ -634,6 +723,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     const tagMatch = trimmed.match(/^(![^\s]+)/);
     if (tagMatch) {
       const rawTag = tagMatch[1];
+      checkTagSuffix(rawTag);
       const tagVal = trimmed.slice(tagMatch[0].length).replace(/[ \t]#[^\n]*$/, '').trim();
       let fullTag;
 
@@ -679,7 +769,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     return val;
   }
 
-  function parseInlineFlow(str, _flowDepth, _line, _inValue, _blockValue) {
+  function parseInlineFlow(str, _flowDepth, _line, _inValue, _blockValue, _allowKeySep) {
     if (_flowDepth === undefined) _flowDepth = 0;
     if (_flowDepth > 100) throw new YAMLException('YAML: flow nesting too deep (>100)');
     const s = str.trim();
@@ -688,6 +778,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       const items = [];
       let i = 1;
       let afterComma = true;
+      let itemStart = -1;
       while (i < s.length) {
         const c = s[i];
         if (c === ']') {
@@ -698,6 +789,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         if (c === ',') {
           if (afterComma) throw new YAMLException('YAML: unexpected comma in flow sequence');
           afterComma = true;
+          itemStart = -1;
           i++;
           continue;
         }
@@ -709,9 +801,28 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           while (i < s.length && s[i] !== '\n') i++;
           continue;
         }
+        if (c === ':') {
+          // A `:` that follows a completed item on a different line cannot be
+          // an implicit-key separator in a flow sequence.
+          if (itemStart >= 0 && s.slice(itemStart, i).indexOf('\n') >= 0)
+            throw new YAMLException('YAML: missed comma between flow collection entries');
+        }
+        // A document separator (`---` / `...`) at the start of a line inside a
+        // flow collection is invalid (mirrors js-yaml's "missed comma" error).
+        if (s.startsWith('---', i) || s.startsWith('...', i)) {
+          const prevNL = s.lastIndexOf('\n', i - 1);
+          const before = prevNL < 0 ? s.slice(0, i) : s.slice(prevNL + 1, i);
+          if (/^[ \t]*$/.test(before))
+            throw new YAMLException('YAML: missed comma between flow collection entries');
+        }
         const sub = s.slice(i);
+        if (itemStart < 0) itemStart = i;
         const sep = flowKeySep(sub);
         if (sep > 0) {
+          // An implicit pair in a flow sequence is only valid when the `:`
+          // separator is on the same line as the key (YAML simple key rule).
+          if (sub.slice(0, sep).indexOf('\n') >= 0)
+            throw new YAMLException('YAML: missed comma between flow collection entries');
           const e = scanFlowItemEnd(sub);
           const fr = parseInlineFlow('{' + sub.slice(0, e) + '}');
           if (fr.value && typeof fr.value === 'object') {
@@ -726,8 +837,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         i += r.endPos;
         afterComma = false;
       }
-      const w = items.reduce((s, item) => s + nodeWeight(item), 1);
-      return { value: track(items, w), endPos: s.length };
+      throw new YAMLException('YAML: unexpected end of the stream within a flow sequence');
     }
     if (s.startsWith('{')) {
       const obj = {};
@@ -752,6 +862,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         }
         if (needComma && findKeySep(s.slice(i)) >= 0)
           throw new YAMLException('YAML: missing separating comma in flow mapping');
+        if (s.startsWith('---', i) || s.startsWith('...', i)) {
+          const prevNL = s.lastIndexOf('\n', i - 1);
+          const before = prevNL < 0 ? s.slice(0, i) : s.slice(prevNL + 1, i);
+          if (/^[ \t]*$/.test(before))
+            throw new YAMLException('YAML: missed comma between flow collection entries');
+        }
         let key;
         if (s[i] === '"' || s[i] === "'") {
           if (_line !== undefined) currentColumn = (_line.length - s.length) + offset + i;
@@ -772,8 +888,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
             }
           }
           if (close < 0) {
-            const w = Object.values(obj).reduce((s, item) => s + nodeWeight(item), 1);
-            return { value: track(obj, w), endPos: s.length };
+            throw new YAMLException('YAML: unexpected end of the stream within a flow mapping');
           }
           key = s.slice(i + 1, close);
           if (quote === '"') key = unescapeYaml(key);
@@ -833,11 +948,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           needComma = true;
         }
       }
-      const w = Object.values(obj).reduce((s, item) => s + nodeWeight(item), 1);
-      return { value: track(obj, w), endPos: s.length };
+      throw new YAMLException('YAML: unexpected end of the stream within a flow mapping');
     }
     if (s.startsWith('&')) {
-      const nameEnd = s.slice(1).search(/[ \t\[{"'*,]/);
+      // The anchor name ends only at whitespace/EOL or a flow indicator
+      // (`,`, `[`, `]`, `{`, `}`) — mirroring js-yaml's readAnchorProperty.
+      const nameEnd = s.slice(1).search(/[ \t\n\r,\[\]{}]/);
       if (nameEnd < 0) {
         const aname = s.slice(1);
         setAnchor(aname, track(null));
@@ -847,6 +963,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       const afterName = s.slice(1 + nameEnd);
       const rest = afterName.trim();
       const wsLen = afterName.length - rest.length;
+      // An anchor directly attached to an alias is invalid.
+      if (rest.startsWith('*'))
+        throw new YAMLException('YAML: alias node should not have any properties');
       const r = rest ? parseInlineFlow(rest, _flowDepth + 1, _line) : { value: null, endPos: 0 };
       const val = track(r.value !== undefined ? r.value : rest);
       const restTrimmed = rest.trim();
@@ -858,10 +977,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       const aname = s.slice(1).split(/[ ,}\]]/)[0];
       return { value: track(resolveAlias(aname)), endPos: aname.length + 1 };
     }
-    const tagPrefix = s.match(/^(![^\s]*)\s+/);
+    const verbatimTag = s.match(/^(!<[^>]*>)(\s*)/);
+    const tagPrefix = verbatimTag || s.match(/^(![^\s,[\]{}]*)\s+/);
     if (tagPrefix) {
       const rawTag = tagPrefix[1];
-      const rest = s.slice(tagPrefix[0].length);
+      checkTagSuffix(rawTag);
+      const rest = verbatimTag ? s.slice(tagPrefix[1].length) : s.slice(tagPrefix[0].length);
       const trimmedRest = rest.trim();
       const terminator = trimmedRest === '' || trimmedRest.startsWith('}') || trimmedRest.startsWith(']') || trimmedRest.startsWith(',');
       const r = terminator ? { value: '', endPos: 0 } : parseInlineFlow(rest, _flowDepth + 1, _line);
@@ -912,6 +1033,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       }
       if (close > 0) return { value: track(foldFlowScalar(s.slice(1, close)).replace(/''/g, "'")), endPos: close + 1 };
     }
+    // A plain scalar in flow context cannot begin with `-` or `?` when the
+    // following character is whitespace, end-of-input or a flow indicator.
+    if (s[0] === '-' || s[0] === '?') {
+      const following = s[1];
+      if (following === undefined || following === ']' || following === '}' || following === ',' || following === '[' || following === '{' || following === ' ' || following === '\t' || following === '\n' || following === '\r')
+        throw new YAMLException('YAML: missed comma between flow collection entries');
+    }
     let end = _blockValue ? -1 : s.search(/[,})\]]/);
     let commentStart = s.search(/\n[ \t]*#/);
     const sameLineComment = s.search(/(^|[ \t])#[^\n]*/);
@@ -920,6 +1048,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     if (end < 0) {
       if (_inValue && s.indexOf('\n') >= 0 && findKeySep(s) >= 0)
         throw new YAMLException('YAML: missing separating comma in flow mapping');
+      if (_blockValue && findKeySep(s) >= 0 && !_allowKeySep)
+        throw new YAMLException('YAML: bad indentation of a mapping entry');
       return { value: track(parseScalar(s)), endPos: s.length };
     }
     if (end === 0) return { value: track(parseScalar(s)), endPos: s.length };
@@ -930,8 +1060,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     return { value: track(parseScalar(raw)), endPos: end };
   }
 
-  function parseInlineValue(str) {
-    const r = parseInlineFlow(str, 0, 0, false, true);
+  function parseInlineValue(str, allowKeySep) {
+    const r = parseInlineFlow(str, 0, 0, false, true, allowKeySep);
     if (r.value !== undefined) return r.value;
     return track(parseScalar(str));
   }
@@ -1073,6 +1203,32 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     return depth <= 0;
   }
 
+  // Index just past the closing quote/bracket of a complete quoted scalar or
+  // flow collection that starts at `s[0]`, or -1 when `s` does not begin with a
+  // quote/bracket or is not fully closed.
+  function closedValueEnd(s) {
+    if (!/^["'\[\{]/.test(s)) return -1;
+    let quote = null;
+    let depth = 0;
+    for (let k = 0; k < s.length; k++) {
+      const ch = s[k];
+      if (quote) {
+        if (quote === '"') {
+          if (ch === '\\') { k++; continue; }
+          if (ch === '"') { quote = null; if (depth === 0) return k + 1; }
+        } else {
+          if (ch === "'" && s[k + 1] === "'") { k++; continue; }
+          if (ch === "'") { quote = null; if (depth === 0) return k + 1; }
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === '[' || ch === '{') depth++;
+      else if (ch === ']' || ch === '}') { depth--; if (depth === 0) return k + 1; }
+    }
+    return -1;
+  }
+
   // Assemble an unclosed flow value together with its continuation lines.
   function gatherFlowValue(valStr, ls, i, keyIndent) {
     let joined = valStr;
@@ -1118,13 +1274,18 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       let column = 0;
       while (column < line.length && line[column] === ' ') column++;
       const wsOnly = line.trim() === '';
-      if (wsOnly) {
+      const tabAtCol = column < line.length && line[column] === '\t';
+      if (wsOnly && !tabAtCol) {
         if (!detectedIndent && contentIndent === -1) maxLeadingIndent = Math.max(maxLeadingIndent, column);
         region += line + '\n';
         i++;
         continue;
       }
-      if (column < line.length && line[column] === '\t' && column < parentIndent)
+      // A tab within the indentation region (before the parent indent) is an
+      // error (mirrors js-yaml: "tab characters must not be used in
+      // indentation"). A tab at or past the parent indent makes the line
+      // content, so it never falls into the blank-line branch above.
+      if (tabAtCol && column < parentIndent)
         throw err('Tab characters are not allowed for indentation in YAML 1.2', column);
       if (contentIndent === -1) {
         if (column < maxLeadingIndent)
@@ -1220,6 +1381,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     let lastInlineKeyIndent = -1;
     let lastInlineScalar;
     let lastInlineInterrupted = false;
+    let lastInlineCommented = false;
     let lastKeyIndent = -1;
     let seqDashIndent = -1;
 
@@ -1236,7 +1398,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       }
       if (stopAtQuestionKey && indent === baseIndent && (trimmed.startsWith('? ') || trimmed === '?')) break;
 
-      if (trimmed.startsWith('- ') || trimmed === '-') {
+      if (trimmed.startsWith('- ') || trimmed.startsWith('-\t') || trimmed === '-') {
         if (line[indent] === '\t')
           throw err('Tab characters are not allowed for indentation in YAML 1.2', indent);
         inSeq = true;
@@ -1247,6 +1409,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         seqDashIndent = indent;
         lastInlineScalar = undefined;
         lastInlineInterrupted = false;
+        lastInlineCommented = false;
         const dashContent = trimmed === '-' ? '' : trimmed.slice(2);
         const subIndent = indent + 1;
 
@@ -1267,6 +1430,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
 
         const bsH = parseBSHeader(dashContent.replace(/\s*#.*$/, '').trim());
         if (bsH) {
+          const afterInd = dashContent.replace(/^(\||>)([0-9+\-]*)/, '');
+          if (afterInd !== '') {
+            if (!/^[ \t]/.test(afterInd))
+              throw err('a line break is expected after the block scalar indicator');
+            const trimmedAfter = afterInd.trim();
+            if (trimmedAfter !== '' && !trimmedAfter.startsWith('#'))
+              throw err('a line break is expected after the block scalar indicator');
+          }
           const bs = extractBlockScalar(dashContent.replace(/\s*#.*$/, '').trim(), ls, i + 1, indent, indent);
           seq.push(track(bs.text));
           i = bs.next;
@@ -1280,8 +1451,17 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           seq.push(track(null));
           i = j - 1;
         } else {
+        const sepWs = trimmed.slice(1).match(/^[ \t]*/)[0];
+        const afterSep = trimmed.slice(1 + sepWs.length);
+        if (sepWs.indexOf('\t') >= 0) {
+          // A tab in the dash-to-content separation makes a following
+          // sequence-entry dash illegal (mirrors js-yaml: "bad indentation of
+          // a sequence entry"); `-\t-1` stays a plain scalar.
+          if (afterSep === '-' || afterSep.startsWith('- ') || afterSep.startsWith('-\t'))
+            throw err('bad indentation of a sequence entry');
+        }
         const colonIdxItem = findKeySep(dashContent);
-        const isMappingItem = colonIdxItem >= 0 && (dashContent[colonIdxItem + 1] === ' ' || itemLines.length > 0);
+        const isMappingItem = colonIdxItem >= 0 && ((dashContent[colonIdxItem + 1] === ' ' || dashContent[colonIdxItem + 1] === '\t' || colonIdxItem === dashContent.length - 1) || itemLines.length > 0);
         let itemDedent;
         if (isMappingItem) {
           // Keys of a mapping item sit at indent+2; deeper lines are their values.
@@ -1293,6 +1473,17 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
             if (il.trim() === '') continue;
             const gi = getIndent(il);
             if (itemDedent === subIndent || gi < itemDedent) itemDedent = gi;
+          }
+        }
+        // A block structure item (mapping or nested sequence) pins its content
+        // to indent+2; any content line between the dash and that level is a
+        // mis-indented sequence entry (mirrors js-yaml: "bad indentation of a
+        // sequence entry").
+        if (isMappingItem || dashContent.trimStart().startsWith('-')) {
+          for (const il of itemLines) {
+            if (il.trim() === '' || il.trim().startsWith('#')) continue;
+            const gi = getIndent(il);
+            if (gi < indent + 2) throw err('bad indentation of a sequence entry');
           }
         }
         const dashAnchorMatch = dashContent.match(/^&([^\s,\[\]{}]+)(\s+.*)?$/);
@@ -1316,6 +1507,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           const itemYaml = [dashContent, ...itemLines.map(l => l.slice(itemDedent))].join('\n');
           seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state)));
         } else if (itemLines.length === 0) {
+          const cveItem = closedValueEnd(dashContent);
+          if (cveItem >= 0 && dashContent.slice(cveItem) !== '' && !/^[ \t]+#/.test(dashContent.slice(cveItem))) {
+            throw err('unexpected content after a closed ' + (dashContent[0] === '"' || dashContent[0] === "'" ? 'quoted value' : 'flow collection'));
+          }
           seq.push(track(parseInlineValue(dashContent)));
         } else {
           const itemYaml = [dashContent, ...itemLines.map(l => l.slice(itemDedent))].join('\n');
@@ -1327,6 +1522,11 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         let colonIdx = -1;
         let key;
         const afterIndent = line.slice(indent);
+        // A non-sequence line at the sequence indent after sequence entries is
+        // a new document node, which is illegal (js-yaml: "end of the stream
+        // or a document separator is expected").
+        if (inSeq && seq.length > 0 && indent === seqDashIndent)
+          throw err('end of the stream or a document separator is expected');
         if (afterIndent.startsWith('"')) {
           let close = -1;
           let pos = 1;
@@ -1349,7 +1549,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         let valStr;
         let explicitValueMode = false;
         // Explicit key syntax: ? key \n : value  (check BEFORE colon detection)
-        if (afterIndent.startsWith('? ') || trimmed === '?') {
+        if (afterIndent.startsWith('? ') || afterIndent.startsWith('?\t') || trimmed === '?') {
           if (lastKeyIndent >= 0 && indent !== lastKeyIndent)
             throw err('bad indentation of a mapping entry');
           lastKeyIndent = indent;
@@ -1373,6 +1573,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
 
           // Assemble the key node from keyStart (+ continuation lines).
           const keyStartTrim = keyStart.trim();
+          // A tab in the key's separation space makes a same-line mapping entry
+          // or a block-indicator key illegal (mirrors js-yaml's firstTabInLine
+          // checks); `?\tkey` and `?\t-1` remain valid keys.
+          if ((keyStart.indexOf('\t') >= 0 || /^\?[ \t]*\t/.test(afterIndent)) &&
+              (findKeySep(keyStartTrim) >= 0 || /^[-?:]( |$)/.test(keyStartTrim)))
+            throw err('bad indentation of a mapping entry');
           let keyNode;
           if (keyStartTrim !== '' && !/^[-\[{&*>!]/.test(keyStartTrim)) {
             keyNode = keyStartTrim;
@@ -1402,6 +1608,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
             continue;
           }
           const colonTrim = ls[vi].trim();
+          if (colonTrim.startsWith(':\t')) {
+            // A tab right after the explicit-key value separator only permits a
+            // scalar (plain/quoted/block) value; any mapping/sequence/flow
+            // value is illegal (mirrors js-yaml's firstTabInLine behaviour).
+            const vc = colonTrim.slice(1).trimStart();
+            if (vc !== '' && (findKeySep(vc) >= 0 || /^[-?:]( |$)/.test(vc) || vc.startsWith('[') || vc.startsWith('{')))
+              throw err('bad indentation of a mapping entry');
+          }
           valStr = colonTrim === ':' ? '' : colonTrim.slice(1).trim();
           explicitValueMode = true;
           i = vi; // the ':' line — shared value handling below starts content at i+1
@@ -1412,22 +1626,55 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
             // Not allowed between sequence items.
             if (/^&[^\s,\[\]{}]+(\s|$)/.test(trimmed)) {
               if (inSeq && seq.length > 0) throw err('anchor cannot appear between sequence items');
+              const aRest = trimmed.replace(/^&[^\s,\[\]{}]+/, '').trim();
+              // An anchor directly in front of a block sequence entry on the
+              // same line is illegal (js-yaml: "end of the stream or a
+              // document separator is expected").
+              if (aRest === '-' || aRest.startsWith('- '))
+                throw err('end of the stream or a document separator is expected');
+              // A bare anchor line after a mapping entry would become a
+              // multiline implicit key, which js-yaml rejects.
+              if (Object.keys(result).length > 0 || lastKeyIndent >= 0 || (inSeq && seq.length > 0))
+                throw err('can not read a block mapping entry; a multiline key may not be an implicit key');
               i++; continue;
             }
             // A plain line with no key separator is only legal as a continuation of the
             // previous inline plain-scalar value (no comment/blank interrupting).
-            if (typeof lastInlineScalar === 'string' && !lastInlineInterrupted) {
+            if (typeof lastInlineScalar === 'string' && !lastInlineInterrupted && getIndent(line) > lastInlineKeyIndent) {
+              // A comment on the initial value line cuts the scalar short; any
+              // deeper content line is then illegal (js-yaml: "bad indentation
+              // of a mapping entry").
+              if (lastInlineCommented) throw err('bad indentation of a mapping entry');
               let n = i + 1;
-              const cont = [line];
-              while (n < ls.length) {
-                const t = ls[n].trim();
-                if (t === '') { cont.push(ls[n]); n++; continue; }
-                const ni = getIndent(ls[n]);
-                if (ni <= lastInlineKeyIndent) break;
-                if (t.startsWith('#')) { lastInlineInterrupted = true; break; }
-                if (findKeySep(ls[n].slice(ni)) >= 0) throw err('bad indentation of a mapping entry');
-                cont.push(ls[n]);
-                n++;
+              let commentedLine = false;
+              const cont = [];
+              const firstSC = splitPlainComment(line);
+              if (firstSC.commented) commentedLine = true;
+              cont.push(firstSC.content);
+              if (!firstSC.commented) {
+                while (n < ls.length) {
+                  const t = ls[n].trim();
+                  if (t === '') { cont.push(ls[n]); n++; continue; }
+                  const ni = getIndent(ls[n]);
+                  if (ni <= lastInlineKeyIndent) break;
+                  if (t.startsWith('#')) { lastInlineInterrupted = true; break; }
+                  if (findKeySep(ls[n].slice(ni)) >= 0) throw err('bad indentation of a mapping entry');
+                  const sc = splitPlainComment(ls[n]);
+                  cont.push(sc.content);
+                  n++;
+                  if (sc.commented) { commentedLine = true; break; }
+                }
+              }
+              if (commentedLine) {
+                // After the scalar was cut short by a comment, any remaining
+                // content line at a deeper indent is illegal.
+                while (n < ls.length) {
+                  const t = ls[n].trim();
+                  const ni = getIndent(ls[n]);
+                  if (t === '' || t.startsWith('#')) { n++; continue; }
+                  if (ni > lastInlineKeyIndent) throw err('bad indentation of a mapping entry');
+                  break;
+                }
               }
               const joined = lastInlineScalar + '\n' + cont.join('\n');
               safeAssign(result, lastInlineKey, track(parseScalar(joined)));
@@ -1440,7 +1687,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           }
           if (key === undefined) key = line.slice(indent, colonIdx).trim();
           const keyTagM = key.match(/^(![^\s]+)[ \t]+(.*)$/);
-          if (keyTagM) key = keyTagM[2].trim() === '' ? '' : keyTagM[2].trim();
+          if (keyTagM) { checkTagSuffix(keyTagM[1]); key = keyTagM[2].trim() === '' ? '' : keyTagM[2].trim(); }
           valStr = line.slice(colonIdx + 1).trim();
         }
         if (line[indent] === '\t')
@@ -1458,6 +1705,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           const km = key.match(/^&([^\s,\[\]{}]+)\s*(.*)/);
           if (km) {
             const restKey = km[2].trim();
+            // An anchor directly attached to an alias is invalid.
+            if (restKey.startsWith('*'))
+              throw err('alias node should not have any properties');
             if (restKey !== '') {
               key = restKey;
               if ((key.startsWith('"') && key.endsWith('"') && key.length >= 2)) key = unescapeYaml(key.slice(1, -1));
@@ -1485,6 +1735,17 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         if (valForBlock.startsWith('|') || valForBlock.startsWith('>')) {
           if (!bsHeader)
             throw err('a line break is expected after the block scalar indicator');
+          // After the indicator/indicators the line must end, or have whitespace
+          // before an optional comment. A bare `#` or other content is an error
+          // (mirrors js-yaml: "a line break is expected").
+          const afterInd = valForBlock.replace(/^(\||>)([0-9+\-]*)/, '');
+          if (afterInd !== '') {
+            if (!/^[ \t]/.test(afterInd))
+              throw err('a line break is expected after the block scalar indicator');
+            const trimmedAfter = afterInd.trim();
+            if (trimmedAfter !== '' && !trimmedAfter.startsWith('#'))
+              throw err('a line break is expected after the block scalar indicator');
+          }
           lastInlineScalar = undefined;
           const bs = extractBlockScalar(bsBody, ls, i + 1, indent, indent);
           addKey(key);
@@ -1524,17 +1785,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
           continue;
         }
 
-        const aliasAnchorMatch = valStr.match(/^&([^\s,\[\]{}]+)\s+\*([^\s,\[\]{}]+)/);
-        if (aliasAnchorMatch) {
-          lastInlineScalar = undefined;
-          const aname = aliasAnchorMatch[1];
-          const srcAnchor = aliasAnchorMatch[2];
-          const val = track(resolveAlias(srcAnchor));
-          setAnchor(aname, val, srcAnchor);
-          addKey(key);
-          safeAssign(result, key, val);
-          i++;
-          continue;
+        // An anchor directly attached to an alias is invalid in YAML
+        // (mirrors js-yaml: "alias node should not have any properties").
+        // The anchor token is read greedily (it may contain `*`/`:`), and a
+        // following `*` only starts an alias after whitespace.
+        {
+          const am = valStr.match(/^&([^\s,\[\]{}]+)([ \t]*)(.*)$/);
+          if (am && am[3].startsWith('*'))
+            throw err('alias node should not have any properties');
         }
 
         if (valStr === '' || valStr.startsWith('#')) {
@@ -1590,11 +1848,16 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
             val = g.full;
             consumed = g.next;
           }
-          const parsed = parseInlineValue(val);
+          const cve = closedValueEnd(valStr);
+          if (cve >= 0 && valStr.slice(cve) !== '' && !/^[ \t]+#/.test(valStr.slice(cve))) {
+            throw err('unexpected content after a closed ' + (valStr[0] === '"' || valStr[0] === "'" ? 'quoted value' : 'flow collection'));
+          }
+          const parsed = parseInlineValue(val, explicitValueMode);
           lastInlineScalar = (typeof parsed === 'string' && !/^[\s"'\[\]{}*&!|>]/.test(valStr) && !/^(\||>)[0-9+\-]*$/.test(valStr)) ? parsed : undefined;
           lastInlineKey = key;
           lastInlineKeyIndent = indent;
           lastInlineInterrupted = false;
+          lastInlineCommented = typeof parsed === 'string' && splitPlainComment(valStr).commented && lastInlineScalar !== undefined;
           addKey(key);
           safeAssign(result, key, track(parsed));
           i = consumed;
@@ -1648,6 +1911,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
     // Root-level tagged node: strip the tag and parse the remaining content.
     const tm = topContent.match(/^(![^\s]*)[ \t]*(.*)$/s);
     const rawTag = tm[1];
+    checkTagSuffix(rawTag);
     let content = tm[2].trim();
     if (findKeySep(content) >= 0) {
       result = parseBlock(0, 0);
@@ -1659,6 +1923,31 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
       } else if (content === '') {
         taggedVal = null;
       } else {
+        // A multiline tagged scalar: js-yaml folds plain-scalar continuations
+        // but rejects document markers, key-value lines and (after a closed
+        // quoted scalar) any directive-form or further content line.
+        const tagLines = content.split('\n');
+        const firstTagLine = tagLines[0].trim();
+        if (tagLines.length > 1 && !firstTagLine.startsWith('[') && !firstTagLine.startsWith('{')) {
+          const closedQuote = /^"|^'/.test(firstTagLine) && quotedClosedOnLine(firstTagLine);
+          let contEnd = tagLines.length;
+          for (let ti = 1; ti < tagLines.length; ti++) {
+            const tl = tagLines[ti];
+            const tt = tl.trim();
+            if (tt === '' || tt.startsWith('#')) continue;
+            if (tt === '...' || tt.startsWith('... ')) { contEnd = ti; break; }
+            if (/^(---|\.\.\.)([ \t]|$)/.test(tl))
+              throw err('expected a single document in the stream, but found more');
+            if (closedQuote)
+              throw err('end of the stream or a document separator is expected');
+          }
+          for (let ti = contEnd + 1; ti < tagLines.length; ti++) {
+            const t = tagLines[ti].trim();
+            if (t === '' || t.startsWith('#')) continue;
+            throw err('expected a single document in the stream, but found more');
+          }
+          content = tagLines.slice(0, contEnd).join('\n').trim();
+        }
         taggedVal = parseScalar(content.replace(/[ \t]#[^\n]*$/, '').trim());
       }
       let fullTag;
@@ -1675,14 +1964,44 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state) {
         result = taggedVal;
       }
     }
-  } else if (findKeySep(topContent) < 0 && contentLines[0].trim() !== '-' && !topContent.startsWith('- ') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
+  } else if (findKeySep(topContent) < 0 && contentLines[0].trim() !== '-' && !topContent.startsWith('- ') && !topContent.startsWith('-\t') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
     // A document-end marker on its own line ends the (root scalar) document.
     let scalarLines = contentLines;
+    let afterDocEnd = [];
     for (let i = 1; i < scalarLines.length; i++) {
       const tt = scalarLines[i].trim();
-      if (tt === '...' || tt.startsWith('... ')) { scalarLines = scalarLines.slice(0, i); break; }
+      if (tt === '...' || tt.startsWith('... ')) { afterDocEnd = scalarLines.slice(i + 1); scalarLines = scalarLines.slice(0, i); break; }
+      // A document-start marker at column 0 inside a multiline quoted scalar
+      // is rejected ("unexpected end of the document"); in a plain scalar it
+      // starts a second document.
+      if (/^(---|\.\.\.)([ \t]|$)/.test(scalarLines[i])) {
+        const firstT = contentLines[0].trim();
+        if (firstT.startsWith('"') || firstT.startsWith("'"))
+          throw err('unexpected end of the document within a ' + (firstT[0] === '"' ? 'double' : 'single') + ' quoted scalar');
+        throw err('expected a single document in the stream, but found more');
+      }
     }
-    result = track(parseScalar(scalarLines.join('\n')));
+    // A comment cuts the root plain scalar short; any further content line is
+    // then a second document node, which is illegal (js-yaml: "end of the
+    // stream or a document separator is expected").
+    let rootScalarEnd = -1;
+    const rootParts = [];
+    for (let k = 0; k < scalarLines.length; k++) {
+      const sc = splitPlainComment(scalarLines[k]);
+      rootParts.push(sc.content);
+      rootScalarEnd = k;
+      if (sc.commented) break;
+    }
+    for (let k = rootScalarEnd + 1; k < scalarLines.length; k++) {
+      const t = scalarLines[k].trim();
+      if (t === '' || t.startsWith('#')) continue;
+      throw err('end of the stream or a document separator is expected');
+    }
+    for (const t of afterDocEnd) {
+      if (t.trim() !== '' && !t.trim().startsWith('#'))
+        throw err('expected a single document in the stream, but found more');
+    }
+    result = track(parseScalar(rootParts.join('\n')));
   } else {
     result = parseBlock(0, 0);
   }
@@ -1994,6 +2313,10 @@ const STREAM_EVENT_TYPES = Object.freeze([
 
 function findKeySepTop(str, start) {
   for (let i = start || 0; i < str.length; i++) {
+    if (str[i] === '#') {
+      if (i === (start || 0) || str[i - 1] === ' ' || str[i - 1] === '\t') return -1;
+      continue;
+    }
     if (str[i] === ':') {
       if (i + 1 >= str.length || str[i + 1] === ' ' || str[i + 1] === '\t' || str[i + 1] === '}' || str[i + 1] === ']')
         return i;
@@ -3048,7 +3371,7 @@ class StreamParser {
       return { value: obj, endPos: s.length };
     }
     if (s.startsWith('&')) {
-      const nameEnd = s.slice(1).search(/[ \t\[{"'*,]/);
+      const nameEnd = s.slice(1).search(/[ \t\n\r,\[\]{}]/);
       if (nameEnd < 0) {
         const aname = s.slice(1);
         if (this.anchorMode === 'disable') throw this._err('anchors are disabled in streaming mode');

@@ -39,7 +39,7 @@ for (const file of files) {
     // number of em-dashes followed by » (deeper tabs use longer dashes).
     const cleanYaml = yaml
       .replace(/␣/g, ' ')
-      .replace(/[—–-]*»/g, '\t')
+      .replace(/—*»/g, '\t')
       .replace(/↵/g, '')
       .replace(/←/g, '\r')
       .replace(/⇔/g, '\uFEFF')
