@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.10.0 (2026-08-05)
+
+### YAML Test Suite Conformance
+- **406 / 406 test cases passing (351 files, 100%)** — every official YAML Test Suite case now passes, including the previously-failing edge cases below.
+
+### Improvements — Anchors & Aliases
+- **Anchor/alias names may contain `:`** (`&a:` / `*a:`): `findKeySep` no longer treats a colon inside an `&`/`*` token as a key separator (YAML 1.1).
+- **`2SXE` anchor-on-key with colon in name**: `&a: key: &a value\nfoo:\n  *a:` now yields `{"key":"value","foo":"key"}`.
+- **Alias as block value**: a lone `*alias` continuation line (e.g. `b:\n  *x`) resolves to its anchored value, matching inline `b: *x`.
+- **Pre-scan safety errors propagate**: the best-effort anchor pre-scan silently skips benign parse noise (mapping entries with anchor-on-key), but re-throws safety-limit errors (alias bomb, alias depth, circular alias) so the protections can never be bypassed.
+- **Root anchor intercept refinements** (`rootAnchorHasSibling`, `!rest.startsWith('!')`): a root `&anchor scalar` is only intercepted when it is truly a lone plain scalar; sibling lines and tag-suffixed anchors fall through to the block parser (`9KAX`/`KSS4`).
+
+### Improvements — Blocks, Tags & Flow
+- **`735Y`**: `splitProps` treats a trailing `# comment` after a sequence item's property line (`- !!map # comment`) as the line terminator instead of part of the key.
+- **`M5C3`**: a standalone block-scalar indicator line (`|2`, `>-`, `>1`) following tag/anchor property lines becomes the key's value (off-by-one fixed: `i = bs.next`).
+- **`4JVG`**: two anchors on one entry (`key: &a` then `&b v`) rejected with "bad indentation of a mapping entry", matching js-yaml.
+- **`565N`**: `!!binary` with a folded double-quoted value spanning lines (`\` continuations) yields a Buffer; quoted `!!binary` values stay strings (no base64 decode).
+- **`CN3R`**: flow anchors pre-scanned only when the flow collection is closed; `&anchor ` stripped from flow-mapping keys (`&c c:` → `c:`).
+- **`CT4Q`**: explicit `?` keys in flow sequences (`[? foo\n bar : baz]`) parsed as implicit mappings.
+
+### Tests
+- `test/yaml-test-suite.js`: switched to `parseAll` with per-document JSON comparison (`splitJsonValues`), enabling multi-document checks; **406 passed, 0 failed, 0 errored**.
+- `test/index.js`: 127 passed; `test/fuzz.js`: 262 passed; `test/stream.js`: 51 passed; `test/stream-fuzz.js`: 1645 passed.
+
 ## 1.9.0 (2026-08-04)
 
 ### YAML Test Suite Conformance

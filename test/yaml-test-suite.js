@@ -45,7 +45,7 @@ for (const file of files) {
       .replace(/⇔/g, '\uFEFF')
       .replace(/∎\n?$/, '');
 
-    const result = parser.parse(cleanYaml);
+    const result = parser.parseAll(cleanYaml);
     if (!result.ok) {
       if (tc.fail) { passed++; continue; }
       failed++; failures.push({ file, name, error: result.error }); continue;
@@ -55,18 +55,94 @@ for (const file of files) {
     }
 
     if (expectedJson) {
-      let expected;
-      try { expected = JSON.parse(expectedJson.trim()); }
-      catch (e) {
-        try { expected = eval('(' + expectedJson.trim() + ')'); }
-        catch (e2) { failed++; failures.push({ file, name, error: 'bad json: ' + e.message }); continue; }
+      const expectedValues = splitJsonValues(expectedJson);
+      if (expectedValues === null) {
+        failed++; failures.push({ file, name, error: 'bad json: ' + expectedJson.slice(0, 80) }); continue;
       }
-      if (deepEqual(result.result, expected)) { passed++; }
-      else { failed++; failures.push({ file, name, error: 'mismatch', expected: JSON.stringify(expected), actual: JSON.stringify(result.result) }); }
+      const docs = Array.isArray(result.result) ? result.result : [result.result];
+      if (docs.length !== expectedValues.length) {
+        failed++; failures.push({ file, name, error: 'document count mismatch', expected: expectedValues.length, actual: docs.length }); continue;
+      }
+      let ok = true;
+      for (let d = 0; d < docs.length; d++) {
+        if (!deepEqual(docs[d], expectedValues[d])) { ok = false; break; }
+      }
+      if (ok) passed++;
+      else { failed++; failures.push({ file, name, error: 'mismatch', expected: JSON.stringify(expectedValues), actual: JSON.stringify(docs) }); }
     } else {
       passed++;
     }
   }
+}
+
+// Split a YAML test-suite `json:` field into its top-level values. The suite
+// stores one JSON value per document, so multi-document tests have several
+// top-level values (objects, strings, null, arrays) concatenated.
+function splitJsonValues(text) {
+  const out = [];
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    while (i < n && /\s/.test(text[i])) i++;
+    if (i >= n) break;
+    const ch = text[i];
+    let end;
+    if (ch === '{' || ch === '[') {
+      end = findJsonClose(text, i, ch);
+      if (end < 0) return null;
+      end++;
+    } else if (ch === '"' || ch === "'") {
+      end = findJsonStringEnd(text, i, ch);
+      if (end < 0) return null;
+      end++;
+    } else {
+      let j = i;
+      while (j < n && !/\s/.test(text[j])) j++;
+      end = j;
+    }
+    out.push(text.slice(i, end));
+    i = end;
+  }
+  const parsed = [];
+  for (const v of out) {
+    try { parsed.push(JSON.parse(v)); }
+    catch (e) {
+      try { parsed.push(eval('(' + v + ')')); }
+      catch (e2) { return null; }
+    }
+  }
+  return parsed;
+}
+
+function findJsonClose(text, start, open) {
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  let inStr = null;
+  let esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inStr = ch; continue; }
+    if (ch === open) depth++;
+    else if (ch === close) { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+function findJsonStringEnd(text, start, quote) {
+  let esc = false;
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (esc) { esc = false; continue; }
+    if (ch === '\\') { esc = true; continue; }
+    if (ch === quote) return i;
+  }
+  return -1;
 }
 
 function deepEqual(a, b) {

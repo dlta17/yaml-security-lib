@@ -77,4 +77,4 @@ Built-in YAML types (`!!str`, `!!int`, `!!float`, `!!bool`, `!!null`,
 `!!timestamp`, `!!binary`) are declared in `src/schema.js` and attached to
 `DEFAULT_SCHEMA` in `src/index.js`. The YAML Test Suite conformance target is
 
-~89% (313/351), matching the YAML 1.2 type-system choices above.
+~100% (406/406), matching the YAML 1.2 type-system choices above.
