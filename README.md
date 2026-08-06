@@ -6,6 +6,7 @@
 [![Bundle Size](https://img.shields.io/bundlephobia/min/yaml-security-lib)](https://bundlephobia.com/package/yaml-security-lib)
 [![TypeScript](https://img.shields.io/badge/TypeScript-ready-blue)](https://www.npmjs.com/package/yaml-security-lib)
 [![Snyk Advisor](https://img.shields.io/badge/Snyk%20Advisor-Recommended-brightgreen)](https://snyk.io/advisor/npm-package/yaml-security-lib)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21809992.svg)](https://doi.org/10.5281/zenodo.21809992)
 
 **Secure YAML parser for JavaScript.** Protects against:
 - **Duplicate keys** — Privilege escalation (K8s, GitLab, Ansible)
@@ -396,6 +397,7 @@ See [LICENSE](LICENSE) (AGPL-3.0) and [LICENSE.COMMERCIAL](LICENSE.COMMERCIAL).
 ```bash
 npm install
 npm test        # unit + fuzz + stream + stream-fuzz (js-yaml oracle)
+node test/tree-suite.js   # tree event-stream conformance vs YAML Test Suite
 ```
 
 - Zero runtime dependencies; rollup (dev-only) rebuilds the bundles.

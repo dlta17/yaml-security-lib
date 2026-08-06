@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Tree Event Stream (`tree()`)
+- **100% YAML Test Suite tree conformance (262 / 262 tree-block cases)** — `tree()` now emits the exact `+STR`/`+DOC`/`+MAP`/`+SEQ`/`=VAL`/`=ALI` event stream the suite expects, with scalar styles (`:` plain, `'` single, `"` double, `|` literal, `>` folded), anchors, tags and flow-style markers.
+- **`PW8X`**: the anchor pre-scan's `anchors[aname] !== undefined` early-return leaked `state._astSuppress`, silently dropping every tree event from later recursive `yamlToJS` calls (empty-dash sequence items, explicit-value compact maps). Fixed by decrementing the suppression counter before the early return.
+- **`M2N8`**: explicit keys whose content is itself a compact mapping (`? : x`, `? []: x`) are now re-parsed as their own block node; previously the `: value` half of the key was dropped and the key emitted as a bare scalar.
+- **`9MMW`**: in flow context a `:` directly after a quoted token or a closed flow collection (`"JSON like":adjacent`, `{JSON: like}:adjacent`) is now recognized as a key separator, so single-pair flow items with flow/quoted keys emit the expected `+MAP {}` pair.
+- **Harness** (`/tmp/opencode/tree-conformance.mjs`): extraction of `yaml:`/`tree:` blocks now stops at the next test case, restoring a sane compared count (344 files).
+- **Tests**: new `test/tree-suite.js` regression suite — **262 matched, 0 failed, 0 errored, 82 expected throws**.
+
+### Citation
+- **Zenodo DOI: [10.5281/zenodo.21809992](https://doi.org/10.5281/zenodo.21809992)** — archived at the same release version (v1.10.0).
+
 ## 1.10.0 (2026-08-05)
 
 ### YAML Test Suite Conformance
