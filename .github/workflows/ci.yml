@@ -43,6 +43,8 @@ jobs:
         run: node test/tree-suite.js
         env:
           YAML_SUITE_DIR: /tmp/yaml-test-suite/src
+      - name: Test schema validation
+        run: node test/validate.js
       - name: Build + test CJS
         shell: bash
         run: |

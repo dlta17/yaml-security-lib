@@ -97,6 +97,12 @@ export class YamlSecurity {
   /** Parse YAML and return pretty-printed JSON string. */
   parseToJSON(yamlStr: string): YamlResult<string>;
 
+  /** Validate a JS value against a schema spec. Never throws. */
+  validate(value: any, spec: Spec): ValidationResult;
+
+  /** Parse a YAML string and validate it against a schema spec. Never throws. */
+  validateYaml(yamlStr: string, spec: Spec): { ok: boolean; value: any; errors: ValidationError[] };
+
   /** Create a streaming parser bound to this instance's schema and limits. */
   createStream(opts?: StreamOptions): StreamParser;
 
@@ -214,6 +220,10 @@ export interface StreamOptions extends Partial<SetLimitsOptions> {
    */
   anchors?: 'buffer' | 'disable';
   schema?: Schema;
+  /** Validate each document against a schema spec while streaming. */
+  validate?: Spec;
+  /** Abort the stream on the first validation violation (emits `error`). */
+  abortOnError?: boolean;
 }
 
 /** SAX-style event emitted by a `StreamParser`. */
@@ -226,6 +236,7 @@ export type StreamEventType =
   | 'mappingEnd'
   | 'sequenceEnd'
   | 'documentEnd'
+  | 'violation'
   | 'error'
   | 'end';
 
@@ -237,6 +248,9 @@ export interface StreamEvent {
   raw?: string;
   /** Present on `error` events. */
   error?: Error;
+  /** Present on `violation` events. */
+  path?: string;
+  message?: string;
 }
 
 export type StreamListener = (ev: StreamEvent) => void;
@@ -269,4 +283,136 @@ export function parseStream(
   input: string | Iterable<string> | AsyncIterable<string>,
   opts?: StreamOptions
 ): AsyncGenerator<any, void, void>;
+
+// ── Schema validation ───────────────────────────────────────
+
+/** Base shape shared by all schema specs. */
+export interface Spec { __s: string; [k: string]: any; }
+
+export interface StringSpec extends Spec {
+  __s: 'string';
+  min?: number; max?: number; pattern?: string; enum?: string[];
+}
+export interface IntSpec extends Spec {
+  __s: 'int';
+  min?: number; max?: number; exclusiveMin?: number; exclusiveMax?: number; multipleOf?: number;
+}
+export interface FloatSpec extends Spec {
+  __s: 'float';
+  min?: number; max?: number; exclusiveMin?: number; exclusiveMax?: number; multipleOf?: number;
+}
+export interface ArraySpec extends Spec {
+  __s: 'array';
+  items?: Spec; minItems?: number; maxItems?: number; uniqueItems?: boolean;
+}
+export interface TupleSpec extends Spec { __s: 'tuple'; items: Spec[]; }
+export interface ObjectSpec extends Spec {
+  __s: 'object';
+  shape?: { [k: string]: Spec };
+  required?: string[];
+  allowExtra?: boolean;
+  additionalProperties?: Spec | false;
+  patternProperties?: { [p: string]: Spec };
+  minProps?: number; maxProps?: number;
+}
+export interface RecordSpec extends Spec { __s: 'record'; values: Spec; }
+export interface EnumSpec extends Spec { __s: 'enum'; values: any[]; }
+export interface OptionalSpec extends Spec { __s: 'optional'; spec: Spec; }
+export interface NullableSpec extends Spec { __s: 'nullable'; spec: Spec; }
+export interface CombinatorSpec extends Spec {
+  __s: 'oneOf' | 'anyOf' | 'allOf';
+  specs: Spec[];
+}
+export interface NotSpec extends Spec { __s: 'not'; spec: Spec; }
+export interface CustomSpec extends Spec {
+  __s: 'custom';
+  fn: (value: any, helpers: { path: string; errors: ValidationError[]; validate: (v: any, s2: Spec) => ValidationResult }) => boolean | string | void;
+}
+
+export interface ValidationError {
+  path: string;
+  message: string;
+  value?: any;
+}
+export interface ValidationResult { ok: boolean; errors: ValidationError[]; }
+
+/** Validation spec builder namespace. */
+export const s: {
+  string(opts?: { min?: number; max?: number; pattern?: string; enum?: string[] }): StringSpec;
+  int(opts?: Partial<IntSpec>): IntSpec;
+  number(opts?: Partial<FloatSpec>): FloatSpec;
+  float(opts?: Partial<FloatSpec>): FloatSpec;
+  bool(): Spec & { __s: 'bool' };
+  null(): Spec & { __s: 'null' };
+  any(): Spec & { __s: 'any' };
+  never(): Spec & { __s: 'never' };
+  enum(values: any[]): EnumSpec;
+  timestamp(): Spec & { __s: 'timestamp' };
+  array(items?: Spec, opts?: Partial<ArraySpec>): ArraySpec;
+  tuple(items: Spec[]): TupleSpec;
+  object(shape?: { [k: string]: Spec }, opts?: Partial<ObjectSpec>): ObjectSpec;
+  record(values: Spec): RecordSpec;
+  optional(spec: Spec): OptionalSpec;
+  nullable(spec: Spec): NullableSpec;
+  oneOf(specs: Spec[]): CombinatorSpec;
+  anyOf(specs: Spec[]): CombinatorSpec;
+  allOf(specs: Spec[]): CombinatorSpec;
+  not(spec: Spec): NotSpec;
+  custom(fn: CustomSpec['fn']): CustomSpec;
+  fromJSONSchema(js: object, opts?: { resolveExternal?: (ref: string) => object }): Spec;
+};
+
+/** Validate a JS value against a spec. Never throws. */
+export function validate(value: any, spec: Spec): ValidationResult;
+
+/** Parse a YAML string and validate it against a spec. Never throws. */
+export function validateYaml(
+  yamlStr: string,
+  spec: Spec,
+  opts?: ParseOptions
+): { ok: boolean; value: any; errors: ValidationError[] };
+
+/** Incremental SAX validator that consumes StreamParser events. */
+export interface StreamValidator {
+  readonly finalErrors: ValidationError[];
+  readonly violations: ValidationError[];
+  takeNewViolations(): ValidationError[];
+  documentStart(): void;
+  mappingStart(): void;
+  sequenceStart(): void;
+  mappingEnd(): void;
+  sequenceEnd(): void;
+  key(k: any): void;
+  scalar(v: any): void;
+  documentEnd(root?: any): ValidationError[];
+}
+export function createStreamValidator(spec: Spec): StreamValidator;
+
+/** Convert a JSON Schema (draft-07 subset) into a fluent spec. */
+export function fromJSONSchema(js: object, opts?: { resolveExternal?: (ref: string) => object }): Spec;
+/** Convert a fluent spec into a JSON Schema. */
+export function toJSONSchema(spec: Spec): object;
+
+/** Individual builder exports (same as the `s` namespace). */
+export function string(opts?: { min?: number; max?: number; pattern?: string; enum?: string[] }): StringSpec;
+export function int(opts?: Partial<IntSpec>): IntSpec;
+export function number(opts?: Partial<FloatSpec>): FloatSpec;
+export function float(opts?: Partial<FloatSpec>): FloatSpec;
+export function bool(): Spec & { __s: 'bool' };
+export function nullType(): Spec & { __s: 'null' };
+export function any(): Spec & { __s: 'any' };
+export function never(): Spec & { __s: 'never' };
+export function enumType(values: any[]): EnumSpec;
+export function timestamp(): Spec & { __s: 'timestamp' };
+export function array(items?: Spec, opts?: Partial<ArraySpec>): ArraySpec;
+export function tuple(items: Spec[]): TupleSpec;
+export function object(shape?: { [k: string]: Spec }, opts?: Partial<ObjectSpec>): ObjectSpec;
+export function record(values: Spec): RecordSpec;
+export function optional(spec: Spec): OptionalSpec;
+export function nullable(spec: Spec): NullableSpec;
+export function oneOf(specs: Spec[]): CombinatorSpec;
+export function anyOf(specs: Spec[]): CombinatorSpec;
+export function allOf(specs: Spec[]): CombinatorSpec;
+export function not(spec: Spec): NotSpec;
+export function custom(fn: CustomSpec['fn']): CustomSpec;
 

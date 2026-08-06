@@ -3,6 +3,13 @@
 // Zero dependencies. Works in Node ≥16 and modern browsers.
 // ────────────────────────────────────────────────────────
 
+import {
+  s, string, int, number, float, bool, nullType, any, never,
+  enumType, timestamp, array, tuple, object, record,
+  optional, nullable, oneOf, anyOf, allOf, not, custom,
+  validate, createStreamValidator, fromJSONSchema, toJSONSchema,
+} from './validate.js';
+
 // ── Configuration ────────────────────────────────────────
 
 const DEFAULTS = {
@@ -3055,6 +3062,23 @@ export function dump(value, opts) {
   return yamlDump(value, opts);
 }
 
+/**
+ * Parse a YAML string and validate it against a schema spec.
+ * Returns `{ ok, value, errors }` — never throws.
+ * @param {string} yamlStr
+ * @param {*} spec
+ * @param {{schema?: Schema, types?: YamlType[]}} [opts]
+ */
+export function validateYaml(yamlStr, spec, opts = {}) {
+  try {
+    const value = yamlToJS(yamlStr, { ..._baseCfg }, 0, resolveSchemaFor(opts));
+    const r = validate(value, spec);
+    return { ok: r.ok, value, errors: r.errors };
+  } catch (e) {
+    return { ok: false, value: undefined, errors: [{ path: '$', message: e.message, value: undefined }] };
+  }
+}
+
 // ── Public API Class ──────────────────────────────────────
 
 /**
@@ -3190,8 +3214,28 @@ export class YamlSecurity {
   }
 
   /**
+   * Validate a JS value against a schema spec.
+   * @param {*} value
+   * @param {*} spec
+   * @returns {{ok: boolean, errors: Array<{path: string, message: string, value: any}>}}
+   */
+  validate(value, spec) {
+    return validate(value, spec);
+  }
+
+  /**
+   * Parse a YAML string and validate it against a schema spec.
+   * @param {string} yamlStr
+   * @param {*} spec
+   * @returns {{ok: boolean, value: any, errors: Array<{path: string, message: string, value: any}>}}
+   */
+  validateYaml(yamlStr, spec) {
+    return validateYaml(yamlStr, spec);
+  }
+
+  /**
    * Create a SAX-style streaming YAML parser bound to this instance's schema.
-   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable'}} [opts]
+   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', validate?: any, abortOnError?: boolean}} [opts]
    * @returns {StreamParser}
    */
   createStream(opts) {
@@ -3201,8 +3245,9 @@ export class YamlSecurity {
   /**
    * Stream-parse YAML documents (single or multi-doc). Accepts a string or
    * any (async) iterable of chunks and yields each document as it completes.
+   * When `opts.validate` is set, yields `{ value, errors }` per document.
    * @param {string|Iterable<string>|AsyncIterable<string>} input
-   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable'}} [opts]
+   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', validate?: any, abortOnError?: boolean}} [opts]
    * @yields {*}
    */
   parseStream(input, opts) {
@@ -3283,6 +3328,9 @@ class StreamParser {
     this.schema = opts.schema instanceof Schema ? opts.schema : DEFAULT_SCHEMA;
     this.anchorMode = opts.anchors === 'disable' ? 'disable' : 'buffer';
     this.buffered = this.anchorMode === 'buffer';
+
+    this.validator = opts.validate !== undefined ? createStreamValidator(opts.validate) : null;
+    this.abortOnValidation = !!opts.abortOnError && this.validator !== null;
 
     this.buffer = '';
     this.bytes = 0;
@@ -3412,6 +3460,7 @@ class StreamParser {
 
   _emit(type, payload) {
     const ev = payload === undefined ? { type } : { type, ...payload };
+    if (this.validator) this._feedValidator(type, payload, ev);
     const hs = this.handlers[type];
     if (hs) for (const cb of hs) cb(ev);
     const ws = this.handlers['*'];
@@ -3423,6 +3472,37 @@ class StreamParser {
         for (const cb of dhs) cb(doc);
       }
     }
+  }
+
+  // Feed SAX events into the incremental schema validator (if configured) and
+  // forward any newly found violations as `violation` events. When
+  // `abortOnError` is set, the first violation throws and aborts the stream.
+  _feedValidator(type, payload, ev) {
+    const v = this.validator;
+    if (type === 'documentStart') v.documentStart();
+    else if (type === 'mappingStart') v.mappingStart();
+    else if (type === 'sequenceStart') v.sequenceStart();
+    else if (type === 'mappingEnd') v.mappingEnd();
+    else if (type === 'sequenceEnd') v.sequenceEnd();
+    else if (type === 'key') v.key(payload.value);
+    else if (type === 'scalar') v.scalar(payload.value);
+    else if (type === 'documentEnd') {
+      const newVs = v.documentEnd(this.root);
+      for (const vi of newVs) this._emitViolation(vi);
+      return;
+    }
+    const fresh = v.takeNewViolations();
+    for (const vi of fresh) this._emitViolation(vi);
+  }
+
+  _emitViolation(vi) {
+    const ev = { type: 'violation', path: vi.path, message: vi.message, value: vi.value };
+    const hs = this.handlers['violation'];
+    if (hs) for (const cb of hs) cb(ev);
+    const ws = this.handlers['*'];
+    if (ws) for (const cb of ws) cb(ev);
+    if (this.abortOnValidation)
+      throw this._err('schema validation failed at ' + vi.path + ': ' + vi.message);
   }
 
   _handleError(e) {
@@ -3946,18 +4026,21 @@ class StreamParser {
   }
 
   _assignValue(ctx, value) {
-    if (!this.buffered) return;
     if (ctx.kind === 'map') {
       if (ctx.pendingKey !== null) {
-        if (ctx.pendingKey === '<<') ctx.node['<<'] = value;
-        else safeAssign(ctx.node, ctx.pendingKey, value);
+        if (this.buffered) {
+          if (ctx.pendingKey === '<<') ctx.node['<<'] = value;
+          else safeAssign(ctx.node, ctx.pendingKey, value);
+        }
         ctx.pendingKey = null;
       }
     } else if (ctx.kind === 'seq') {
-      ctx.node.push(value);
+      if (this.buffered) {
+        ctx.node.push(value);
+        ctx.lastInlineIndex = ctx.node.length - 1;
+      }
       ctx.pendingItem = false;
       ctx.pendingEmpty = false;
-      ctx.lastInlineIndex = ctx.node.length - 1;
     }
   }
 
@@ -4473,12 +4556,16 @@ export function createStream(opts = {}) {
  */
 export async function* parseStream(input, opts = {}) {
   const parser = new StreamParser(opts);
+  const withValidation = opts.validate !== undefined;
   const queue = [];
   let waker = null;
   let closed = false;
   parser.on('document', (doc) => {
-    if (waker) { const w = waker; waker = null; w(doc); }
-    else queue.push(doc);
+    const out = withValidation
+      ? { value: doc, errors: parser.validator ? parser.validator.finalErrors : [] }
+      : doc;
+    if (waker) { const w = waker; waker = null; w(out); }
+    else queue.push(out);
   });
   parser.on('end', () => {
     closed = true;
@@ -4518,3 +4605,12 @@ export function getBaseConfig() {
 
 /** @internal */
 export { DEFAULT_SCHEMA, unescapeYaml, byteLength };
+
+// ── Schema validation (see src/validate.js) ──────────────
+
+export {
+  s, string, int, number, float, bool, nullType, any, never,
+  enumType, timestamp, array, tuple, object, record,
+  optional, nullable, oneOf, anyOf, allOf, not, custom,
+  validate, createStreamValidator, fromJSONSchema, toJSONSchema,
+};

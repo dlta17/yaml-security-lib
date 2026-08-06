@@ -254,6 +254,88 @@ normal.parse("&a 1\n&b *a\n&c *b\n&d *c\nkey: *d")
 // → { ok: true, result: { key: 1 } }  ← unaffected by strict config
 ```
 
+## Schema Validation
+
+Validate parsed YAML (or plain JS values) against a schema spec. Works standalone (`validate`, `validateYaml`) and **inside the streaming API** — the validator consumes the SAX events incrementally, so a bad document can be rejected before the rest of the input is consumed.
+
+### Fluent builder
+
+```js
+import { s, validate, validateYaml } from 'yaml-security-lib'
+
+const user = s.object({
+  name: s.string({ min: 1 }),
+  age: s.int({ min: 0 }),
+  tags: s.array(s.string()),
+  role: s.optional(s.enum(['admin', 'user'])),  // absent OK, present must match
+})
+
+validate({ name: 'ned', age: 30, tags: ['a'] }, user)
+// → { ok: true, errors: [] }
+
+validateYaml('name: ned\nage: -5\n', user)
+// → { ok: false, value: {...}, errors: [{ path: '$.age', message: 'must be >= 0', ... }] }
+```
+
+Errors carry a JSON-pointer-like `path` (`$.a.b[0]`), a `message`, and the offending `value`.
+
+| Builder | Description |
+|---------|-------------|
+| `s.string({ min, max, pattern, enum })` | String with length/pattern/choice constraints |
+| `s.int({ min, max, exclusiveMin, exclusiveMax, multipleOf })` | Integer |
+| `s.number()` / `s.float({...})` | Any finite number |
+| `s.bool()` / `s.null()` / `s.any()` / `s.never()` | Boolean / null / anything / nothing |
+| `s.timestamp()` | `Date` or ISO 8601 string |
+| `s.enum([...])` | One of the listed values (deep equality) |
+| `s.array(items, { minItems, maxItems, uniqueItems })` | Array of `items` |
+| `s.tuple([a, b])` | Fixed-length array, per-index types |
+| `s.object(shape, { required, allowExtra, additionalProperties, patternProperties, minProps, maxProps })` | Object with per-key specs |
+| `s.record(spec)` | Map of any string keys → `spec` |
+| `s.optional(spec)` / `s.nullable(spec)` | Present-optional / accepts `null` |
+| `s.oneOf([...])` / `s.anyOf([...])` / `s.allOf([...])` / `s.not(spec)` | Combinators |
+| `s.custom(fn)` | Custom validator: return `true`/`undefined` to pass, `false` or a string to fail |
+
+Keys in an `s.object(shape)` are **required by default**; wrap with `s.optional()` to relax. Unknown keys are **rejected by default**; set `allowExtra: true` or provide `additionalProperties`.
+
+### JSON Schema bridge
+
+`fromJSONSchema(js)` converts a JSON Schema (draft-07 subset: `type`, `enum`, `const`, `$ref` to local `#/$defs`, `pattern`, `min/maxLength`, `minimum/maximum`, `multipleOf`, `items`, `prefixItems`→tuple, `properties`, `required`, `additionalProperties`, `patternProperties`, `min/maxItems`, `min/maxProperties`, `uniqueItems`, `oneOf`/`anyOf`/`allOf`/`not`, boolean schemas) into a fluent spec. `toJSONSchema(spec)` converts back:
+
+```js
+import { s, validate, fromJSONSchema } from 'yaml-security-lib'
+
+const spec = s.fromJSONSchema({           // or fromJSONSchema(js)
+  type: 'object',
+  properties: { n: { type: 'integer', minimum: 1 } },
+  required: ['n'],
+  additionalProperties: false,
+})
+```
+
+### Validation in the streaming API
+
+Pass `validate` to `createStream`/`parseStream`. Violations are emitted as `violation` events **incrementally** — as soon as the offending node completes:
+
+```js
+import { createStream, s } from 'yaml-security-lib'
+
+const spec = s.object({ age: s.int({ min: 0 }) })
+const parser = createStream({ validate: spec, abortOnError: true })
+
+parser.on('violation', (v) => console.log(v.path, v.message)) // $.age must be >= 0
+parser.on('error', (e) => console.error('aborted:', e.error.message))
+parser.on('document', (doc) => { /* validated doc */ })
+
+parser.write('age: -5\n')
+parser.end()
+```
+
+- `violation` event: `{ type: 'violation', path, message, value }`.
+- `abortOnError: true` throws on the **first** violation → the stream aborts with an `error` event before consuming the rest of the input.
+- `parseStream(input, { validate: spec })` yields `{ value, errors }` per document (`errors` is the authoritative per-doc list).
+- Structure-level checks (object/array/record/tuple/scalar/ranges) are exact and incremental. `oneOf`/`anyOf`/`allOf`/`not`/`custom` and deep `uniqueItems` are authoritatively resolved at document end from the buffered root (default mode); in `anchors: 'disable'` (zero-buffering) mode they are best-effort via kind-matched branches.
+- `createStreamValidator(spec)` is exported standalone for custom event-driven consumers.
+
 ## Comparison vs Alternatives
 
 | Feature | yaml-security-lib | js-yaml | yaml (Eemeli) |

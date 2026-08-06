@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.11.0 (2026-08-06)
+
+### New: Schema Validation system
+- New `src/validate.js` (zero-dep, bundled by rollup) with a Zod-like fluent builder (`s.string`, `s.int`, `s.number`, `s.bool`, `s.null`, `s.any`, `s.never`, `s.enum`, `s.timestamp`, `s.array`, `s.tuple`, `s.object`, `s.record`, `s.optional`, `s.nullable`, `s.oneOf`, `s.anyOf`, `s.allOf`, `s.not`, `s.custom`).
+- `validate(value, spec)` → `{ ok, errors }` with JSON-pointer-like paths (`$.a.b[0]`).
+- `validateYaml(yamlStr, spec)` → `{ ok, value, errors }` (never throws; parse errors captured as `$` errors).
+- `fromJSONSchema(js)` / `toJSONSchema(spec)` — JSON Schema (draft-07 subset) bridge incl. local `$ref`/`$defs`.
+- **Streaming integration**: `createStream({ validate: spec, abortOnError })` emits `violation` events incrementally as the SAX events arrive; `abortOnError` aborts on the first violation via an `error` event (early rejection before consuming the rest of the input). `parseStream(input, { validate })` yields `{ value, errors }` per document.
+- `createStreamValidator(spec)` exported for custom event-driven consumers.
+- `YamlSecurity` gained `validate(value, spec)` and `validateYaml(str, spec)` methods.
+- Fixed a pre-existing streaming quirk: `_assignValue` now clears its slot bookkeeping even in `anchors: 'disable'` mode (previously emitted a spurious trailing `scalar=null` event).
+- Tests: `test/validate.js` (95 assertions) wired into `npm test` and CI.
+
 ## 1.10.5 (2026-08-06)
 
 ### Docs & Types
