@@ -60,6 +60,18 @@ assertEqual(p.parse('- 1\n- 2\n- 3').result, [1, 2, 3], 'number sequence');
 assertEqual(p.parse('[1, 2, 3]').result, [1, 2, 3], 'inline array');
 assertEqual(p.parse('{a: 1, b: 2}').result, { a: 1, b: 2 }, 'inline object');
 
+// ── Multiline flow ──
+assertEqual(p.parse('key:\n  [1, 2]').result, { key: [1, 2] }, 'own line flow');
+assertEqual(p.parse('key:\n  [\n    1,\n    2\n  ]').result, { key: [1, 2] }, 'own line flow multi');
+assertEqual(p.parse('key:\n  {a: 1}').result, { key: { a: 1 } }, 'own line flow map');
+assertEqual(p.parse('key: [\n  1, 2\n  ]').result, { key: [1, 2] }, 'inline flow multiline');
+assertEqual(p.parse('- [\n  1, 2\n  ]\n- 3').result, [[1, 2], 3], 'inline flow then item');
+assertEqual(p.parse('[\n  1, # one\n  2\n]').result, [1, 2], 'root flow comment');
+assertEqual(p.parse('key: [\n  1, # one\n  2\n  ]').result, { key: [1, 2] }, 'flow comment');
+assert(!p.parse('key: [\n  1, 2\n]').ok, 'dedented closer rejected');
+assert(!p.parse('- [\n  1, 2\n]').ok, 'dedented seq closer rejected');
+assert(!p.parse('key:\n  [\n1\n  ]').ok, 'own line dedented item rejected');
+
 // ── Duplicate keys ──
 assert(!p.parse('x: 1\nx: 2').ok, 'duplicate key detected');
 assert(!p.parse('{a: 1, a: 2}').ok, 'inline duplicate key');

@@ -85,6 +85,17 @@ const cases = {
   'anchor empty node': 'a: &anchor\nb: *anchor\n',
   'unicode anchor': '- &😁 unicode anchor\n',
   'seq flow mapping': '- { url: http://example.org }\n- [name, hr, avg]\n',
+  'inline flow multiline': 'key: [\n  1, 2\n  ]\n',
+  'own line flow': 'key:\n  [1, 2]\n',
+  'own line flow multi': 'key:\n  [\n    1,\n    2\n  ]\n',
+  'own line flow map': 'key:\n  {a: 1}\n',
+  'root multiline flow': '[\n  1, 2, x\n]\n',
+  'root flow comment': '[\n  1, # one\n  2\n]\n',
+  'flow comment': 'key: [\n  1, # one\n  2\n  ]\n',
+  'inline flow then item': '- [\n  1, 2\n  ]\n- 3\n',
+  'own line flow then key': 'key:\n  [\n    1,\n    2\n  ]\nnext: 2\n',
+  'inline flow trail comment': 'key: [\n  1, 2\n  ] # trail\n',
+  'nested own line flow': 'a:\n  b:\n    [1, 2]\n  c: 3\n',
 };
 
 const overrides = {
@@ -97,6 +108,22 @@ const overrides = {
 };
 
 for (const [name, yaml] of Object.entries(cases)) check(name, yaml, overrides[name]);
+
+function checkThrows(name, yaml) {
+  let threw = null;
+  try {
+    const stream = createStream();
+    stream.write(yaml);
+    stream.end();
+  } catch (e) { threw = e; }
+  if (!threw) { fail++; fails.push(name + ': expected throw but parsed ok'); } else pass++;
+}
+
+checkThrows('inline flow dedented closer', 'key: [\n  1, 2\n]\n');
+checkThrows('seq inline flow dedented closer', '- [\n  1, 2\n]\n');
+checkThrows('own line flow dedented item', 'key:\n  [\n1\n  ]\n');
+checkThrows('flow comment dedented', 'key: [\n# comment\n  1, 2\n  ]\n');
+checkThrows('quoted scalar dedented continuation', 'quoted: "a\nb"\n');
 
 function checkAll(name, yaml) {
   const expected = parseAll(yaml);

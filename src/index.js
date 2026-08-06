@@ -2213,8 +2213,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
             break;
           }
           // If the nested block is a plain scalar (no keys/seq/block-scalar), it is the value
-          let isScalarBlock = true;
-          for (let p = valueBlockStart; p < blockEnd; p++) {
+          const blockContentLines = ls.slice(valueBlockStart, blockEnd).filter(l => !l.trim().startsWith('#'));
+          let isFlowBlock = false;
+          if (blockContentLines.length > 0) {
+            const firstRel = blockContentLines[0].slice(nestedBase).replace(/^&[^\s,\[\]{}]+[ \t]*/, '').replace(/^![^\s]+[ \t]*/, '').trim();
+            isFlowBlock = firstRel.startsWith('[') || firstRel.startsWith('{');
+          }
+          let isScalarBlock = !isFlowBlock;
+          for (let p = valueBlockStart; p < blockEnd && isScalarBlock; p++) {
             const t = ls[p].trim();
             if (t === '' || t.startsWith('#')) continue;
             let rel = ls[p].slice(nestedBase).trim();
@@ -2222,9 +2228,30 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
               rel = rel.replace(/^&[^\s,\[\]{}]+[ \t]*/, '');
               if (rel === '') continue;
             }
+            rel = rel.replace(/^![^\s]+[ \t]*/, '');
             if (findKeySep(rel) >= 0 || rel === '-' || rel.startsWith('- ') || /^(\||>)[0-9+\-]*$/.test(rel) || rel.startsWith('? ') || rel.startsWith('&')) { isScalarBlock = false; break; }
           }
-          if (isScalarBlock) {
+          if (isFlowBlock) {
+            const rawParts = blockContentLines;
+            const firstProps = splitProps(rawParts[0].slice(nestedBase));
+            const flowText = [firstProps.rest, ...rawParts.slice(1).map(l => l.slice(nestedBase).replace(/^&[^\s,\[\]{}]+[ \t]*/, '').replace(/^![^\s]+[ \t]*/, ''))]
+              .join('\n');
+            const inlineAnchor = firstProps.anchor;
+            const blockAnchor = inlineAnchor && !valueAnchor && !bareAnchorName ? inlineAnchor : (valueAnchor || bareAnchorName);
+            const blockTag = firstProps.tag ||
+              (valueTag || bareTagName ? (valueTag || bareTagName).startsWith('!!') ? fullTagName(valueTag || bareTagName) : expandTag(valueTag || bareTagName) : null);
+            addKey(key);
+            const fv = parseInlineFlow(flowText);
+            let fval = fv.value !== undefined ? fv.value : parseScalar(flowText);
+            if (blockTag && typeof fval === 'string') {
+              const type = _schema._explicit[blockTag];
+              if (type) fval = type.construct(fval);
+            }
+            const tracked = track(fval);
+            if (blockAnchor) setAnchor(blockAnchor, tracked);
+            safeAssign(result, key, tracked);
+            i = blockEnd - 1;
+          } else if (isScalarBlock) {
             const rawParts = ls.slice(valueBlockStart, blockEnd).filter(l => !l.trim().startsWith('#'));
             const firstProps = splitProps(rawParts[0].slice(nestedBase));
             const folded = [firstProps.rest, ...rawParts.slice(1).map(l => l.slice(nestedBase).replace(/^&[^\s,\[\]{}]+[ \t]*/, ''))]
@@ -3357,6 +3384,7 @@ class StreamParser {
     this.pendingScalar = null;
     this.pendingExplicitKey = null;
     this.pendingBlock = null;
+    this.pendingFlow = null;
     this.retractions = 0;
   }
 
@@ -3549,10 +3577,25 @@ class StreamParser {
     if (this.pendingBlock) { this._feedBlockLine(line); return; }
 
     if (this.rootMode === 'flow' && this._topFlow !== null) {
-      this._topFlow += '\n' + line.trim();
+      const tl = line.trim();
+      if (tl !== '' && !tl.startsWith('#')) this._topFlow += '\n' + tl;
       if (this._flowBalanced(this._topFlow)) {
         const t = this._topFlow; this._topFlow = null;
         this._emitFlowRoot(t);
+      }
+      return;
+    }
+
+    if (this.pendingFlow !== null) {
+      const tl = line.trim();
+      if (tl !== '') {
+        if (this._indentOf(line) < this.pendingFlow.minIndent)
+          throw this._err('deficient indentation within a flow collection');
+        if (!tl.startsWith('#')) this.pendingFlow.flow += '\n' + tl;
+      }
+      if (this._flowBalanced(this.pendingFlow.flow)) {
+        const pf = this.pendingFlow; this.pendingFlow = null;
+        this._emitFlow(pf.ctx, pf.flow, pf.anchor);
       }
       return;
     }
@@ -3631,6 +3674,8 @@ class StreamParser {
     if (this.pendingScalar) {
       const pend = this.pendingScalar;
       if (pend.quote) {
+        if (indent <= pend.seqIndent)
+          throw this._err('deficient indentation within a quoted scalar');
         const content = line.slice(indent);
         const scan = pend.quote === '"' ? this._scanDoubleQuoteEnd(content) : this._scanSingleQuoteEnd(content);
         if (scan >= 0) {
@@ -3675,6 +3720,17 @@ class StreamParser {
       } else {
         top.plainValueLines.push(line);
         return;
+      }
+    }
+
+    if (top && top.kind === 'map' && top.expectValue && indent > top.indent) {
+      const flowProbe = trimmed.replace(/^&[^\s,\[\]{}]+[ \t]*/, '').replace(/^![^\s]+[ \t]*/, '');
+      if (flowProbe.startsWith('[') || flowProbe.startsWith('{')) {
+        const trail = this._closedFlowTrail(flowProbe);
+        if (trail !== null && (trail.trim() === '' || trail.trim().startsWith('#'))) {
+          this._handleBareScalar(line, indent, trimmed, top);
+          return;
+        }
       }
     }
 
@@ -3840,6 +3896,10 @@ class StreamParser {
       return;
     }
     if (item.startsWith('[') || item.startsWith('{')) {
+      if (!this._flowBalanced(item)) {
+        this.pendingFlow = { ctx: seqCtx, anchor: null, flow: item, minIndent: seqCtx.indent + 1 };
+        return;
+      }
       this._emitFlow(seqCtx, item, null);
       return;
     }
@@ -3907,10 +3967,22 @@ class StreamParser {
     }
     if (top && top.kind === 'map' && top.expectValue && indent > top.indent) {
       top.expectValue = false;
+      const flowProbe = trimmed.replace(/^&[^\s,\[\]{}]+[ \t]*/, '').replace(/^![^\s]+[ \t]*/, '');
+      if (flowProbe.startsWith('[') || flowProbe.startsWith('{')) {
+        this._handleValue(top, trimmed);
+        if (this.pendingFlow) this.pendingFlow.minIndent = indent;
+        return;
+      }
       top.plainValueLines = [line];
       return;
     }
     if (top && top.kind === 'seq' && indent > top.indent) {
+      const flowProbe = trimmed.replace(/^&[^\s,\[\]{}]+[ \t]*/, '').replace(/^![^\s]+[ \t]*/, '');
+      if (flowProbe.startsWith('[') || flowProbe.startsWith('{')) {
+        this._handleValue(top, trimmed);
+        if (this.pendingFlow) this.pendingFlow.minIndent = indent;
+        return;
+      }
       const v = resolveScalarTop(trimmed, this.schema, this.tagMap);
       if (this.buffered && top.lastInlineIndex >= 0) {
         top.node[top.lastInlineIndex] = v;
@@ -4009,6 +4081,10 @@ class StreamParser {
         const t = this._topFlow; this._topFlow = null;
         this._emitFlowRoot(t);
       }
+    }
+    if (this.pendingFlow !== null) {
+      const pf = this.pendingFlow; this.pendingFlow = null;
+      this._emitFlow(pf.ctx, pf.flow, pf.anchor);
     }
     this._closeAll();
     this._emit('documentEnd');
@@ -4135,8 +4211,11 @@ class StreamParser {
       return;
     }
     if (rest.startsWith('[') || rest.startsWith('{')) {
-      this._emitFlow(ctx, rest, anchor);
-      return;
+      if (!this._flowBalanced(rest)) {
+        this.pendingFlow = { ctx, anchor, flow: rest, minIndent: (ctx ? ctx.indent : 0) + 1 };
+        return undefined;
+      }
+      return this._emitFlow(ctx, rest, anchor);
     }
     if (rest[0] === '"' && this._scanDoubleQuoteEnd(rest, 1) < 0) {
       this.pendingScalar = { seqCtx: ctx, seqIndent: ctx.indent, value: null, raw: rest, anchor, colonIdx: -1, lines: null, quote: '"', parts: [rest.slice(1)] };
@@ -4266,16 +4345,49 @@ class StreamParser {
       }
       if (ch === '"') { inD = true; continue; }
       if (ch === "'") { inS = true; continue; }
+      if (ch === '#' && (i === 0 || str[i - 1] === ' ' || str[i - 1] === '\t' || str[i - 1] === '\n')) {
+        while (i < str.length && str[i] !== '\n') i++;
+        continue;
+      }
       if (ch === '[' || ch === '{') depth++;
       else if (ch === ']' || ch === '}') { depth--; if (depth < 0) return false; }
     }
     return depth === 0 && !inS && !inD;
   }
 
+  _closedFlowTrail(str) {
+    let depth = 0;
+    let inS = false, inD = false, esc = false;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (inD) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inD = false;
+        continue;
+      }
+      if (inS) {
+        if (ch === "'" && str[i + 1] === "'") { i++; continue; }
+        if (ch === "'") inS = false;
+        continue;
+      }
+      if (ch === '"') { inD = true; continue; }
+      if (ch === "'") { inS = true; continue; }
+      if (ch === '[' || ch === '{') depth++;
+      else if (ch === ']' || ch === '}') {
+        depth--;
+        if (depth === 0) return str.slice(i + 1);
+      }
+    }
+    return null;
+  }
+
   _emitFlow(ctx, str, anchor) {
     const r = this._parseFlowEmitting(str, 0);
     if (anchor) this._registerAnchor(anchor, r.value);
     this._assignValue(ctx, r.value);
+    this._registerValueAnchor(ctx, r.value);
+    return r.value;
   }
 
   _emitFlowRoot(str) {
@@ -4305,7 +4417,11 @@ class StreamParser {
           this._emit('sequenceEnd');
           return { value: items, endPos: i + 1 };
         }
-        if (c === ',' || c === ' ') { i++; continue; }
+        if (c === ',' || c === ' ' || c === '\n' || c === '\t') { i++; continue; }
+        if (c === '#') {
+          while (i < s.length && s[i] !== '\n') i++;
+          continue;
+        }
         const r = this._parseFlowEmitting(s.slice(i), _depth + 1);
         items.push(r.value);
         i += r.endPos;
@@ -4325,7 +4441,11 @@ class StreamParser {
           this._emit('mappingEnd');
           return { value: obj, endPos: i + 1 };
         }
-        if (c === ',' || c === ' ') { i++; continue; }
+        if (c === ',' || c === ' ' || c === '\n' || c === '\t') { i++; continue; }
+        if (c === '#') {
+          while (i < s.length && s[i] !== '\n') i++;
+          continue;
+        }
         let key;
         if (s[i] === '"' || s[i] === "'") {
           const quote = s[i];
@@ -4341,7 +4461,7 @@ class StreamParser {
           i = close + 1;
         } else {
           let j = i;
-          while (j < s.length && s[j] !== ':' && s[j] !== ',' && s[j] !== '}') j++;
+          while (j < s.length && s[j] !== ':' && s[j] !== ',' && s[j] !== '}' && s[j] !== '\n') j++;
           key = s.slice(i, j).trim();
           i = j;
         }
@@ -4349,7 +4469,7 @@ class StreamParser {
           throw this._err('inline mapping keys limit exceeded (' + this.cfg.maxKeys + ')');
         if (seen.has(key)) throw this._err('Duplicate key: "' + key + '"');
         seen.add(key);
-        while (i < s.length && (s[i] === ' ' || s[i] === ':')) i++;
+        while (i < s.length && (s[i] === ' ' || s[i] === '\t' || s[i] === '\n' || s[i] === ':')) i++;
         this._emit('key', { value: key, raw: key });
         this._count();
         const r = this._parseFlowEmitting(s.slice(i), _depth + 1);
@@ -4424,8 +4544,14 @@ class StreamParser {
       while (pos < s.length) { if (s[pos] === "'" && pos + 1 < s.length && s[pos + 1] === "'") { pos += 2; continue; } if (s[pos] === "'") { close = pos; break; } pos++; }
       if (close > 0) { const v = s.slice(1, close).replace(/''/g, "'"); return { value: this._flowScalar(v, s), endPos: close + 1 }; }
     }
-    let end = s.search(/[,})\]]/);
-    if (end < 0) { const v = resolveScalarTop(s, this.schema, this.tagMap); return { value: this._flowScalar(v, s), endPos: s.length }; }
+    let end = s.search(/[,})\]\n]/);
+    if (end < 0) {
+      let raw = s;
+      const hv = raw.search(/#(?=[ \t])/);
+      if (hv >= 0) raw = raw.slice(0, hv).trimEnd();
+      const v = resolveScalarTop(raw, this.schema, this.tagMap);
+      return { value: this._flowScalar(v, raw), endPos: s.length };
+    }
     if (end === 0) { const v = resolveScalarTop(s, this.schema, this.tagMap); return { value: this._flowScalar(v, s), endPos: s.length }; }
     let raw = s.slice(0, end);
     if (raw.endsWith(' ')) raw = raw.trimEnd();
