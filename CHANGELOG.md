@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.3 (2026-08-06)
+
+### Citation
+- **Zenodo DOI badge corrected to the permanent concept DOI: [10.5281/zenodo.21684897](https://doi.org/10.5281/zenodo.21684897)** — the DOI is stable and does not change between releases.
+- **ORCID: [0009-0008-4915-4787](https://orcid.org/0009-0008-4915-4787)**
+
 ## 1.10.2 (2026-08-06)
 
 ### Packaging
