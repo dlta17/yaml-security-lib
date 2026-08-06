@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.10.1 (2026-08-06)
 
 ### Tree Event Stream (`tree()`)
 - **100% YAML Test Suite tree conformance (262 / 262 tree-block cases)** — `tree()` now emits the exact `+STR`/`+DOC`/`+MAP`/`+SEQ`/`=VAL`/`=ALI` event stream the suite expects, with scalar styles (`:` plain, `'` single, `"` double, `|` literal, `>` folded), anchors, tags and flow-style markers.
@@ -11,7 +11,8 @@
 - **Tests**: new `test/tree-suite.js` regression suite — **262 matched, 0 failed, 0 errored, 82 expected throws**.
 
 ### Citation
-- **Zenodo DOI: [10.5281/zenodo.21809992](https://doi.org/10.5281/zenodo.21809992)** — archived at the same release version (v1.10.0).
+- **Zenodo DOI: [10.5281/zenodo.21809992](https://doi.org/10.5281/zenodo.21809992)** — archived at v1.10.0; this patch release shares the same DOI.
+- **ORCID: [0009-0008-4915-4787](https://orcid.org/0009-0008-4915-4787)**
 
 ## 1.10.0 (2026-08-05)
 
