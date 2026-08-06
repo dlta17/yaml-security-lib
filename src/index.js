@@ -1018,7 +1018,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
           aClose('map');
           return { value: track(obj, w), endPos: i + 1 };
         }
-        if (c === ',') { needComma = false; i++; continue; }
+        if (c === ',') {
+          if (!needComma) throw new YAMLException('YAML: unexpected comma in flow mapping');
+          needComma = false; i++; continue;
+        }
         if (c === ' ' || c === '\n' || c === '\t') { i++; continue; }
         if (c === '#') {
           const lineStartOk = /^[ \t]*$/.test(s.slice((s.lastIndexOf('\n', i - 1)) + 1, i));
@@ -4079,12 +4082,18 @@ class StreamParser {
     } else if (this.rootMode === 'flow') {
       if (this._topFlow !== null) {
         const t = this._topFlow; this._topFlow = null;
-        this._emitFlowRoot(t);
+        if (this._flowBalanced(t))
+          this._emitFlowRoot(t);
+        else
+          throw this._err('unexpected end of the stream within a flow ' + (t[0] === '{' ? 'mapping' : 'sequence'));
       }
     }
     if (this.pendingFlow !== null) {
       const pf = this.pendingFlow; this.pendingFlow = null;
-      this._emitFlow(pf.ctx, pf.flow, pf.anchor);
+      if (this._flowBalanced(pf.flow))
+        this._emitFlow(pf.ctx, pf.flow, pf.anchor);
+      else
+        throw this._err('unexpected end of the stream within a flow ' + (pf.flow[0] === '{' ? 'mapping' : 'sequence'));
     }
     this._closeAll();
     this._emit('documentEnd');
@@ -4409,6 +4418,7 @@ class StreamParser {
     if (s.startsWith('[')) {
       const items = [];
       let i = 1;
+      let afterComma = true;
       this._emit('sequenceStart');
       this._count();
       while (i < s.length) {
@@ -4417,7 +4427,13 @@ class StreamParser {
           this._emit('sequenceEnd');
           return { value: items, endPos: i + 1 };
         }
-        if (c === ',' || c === ' ' || c === '\n' || c === '\t') { i++; continue; }
+        if (c === ',' || c === ' ' || c === '\n' || c === '\t') {
+          if (c === ',') {
+            if (afterComma) throw this._err('unexpected comma in flow sequence');
+            afterComma = true;
+          }
+          i++; continue;
+        }
         if (c === '#') {
           while (i < s.length && s[i] !== '\n') i++;
           continue;
@@ -4425,6 +4441,7 @@ class StreamParser {
         const r = this._parseFlowEmitting(s.slice(i), _depth + 1);
         items.push(r.value);
         i += r.endPos;
+        afterComma = false;
       }
       this._emit('sequenceEnd');
       return { value: items, endPos: s.length };
@@ -4433,6 +4450,7 @@ class StreamParser {
       const obj = {};
       const seen = new Set();
       let i = 1;
+      let needKey = true;
       this._emit('mappingStart');
       this._count();
       while (i < s.length) {
@@ -4441,7 +4459,13 @@ class StreamParser {
           this._emit('mappingEnd');
           return { value: obj, endPos: i + 1 };
         }
-        if (c === ',' || c === ' ' || c === '\n' || c === '\t') { i++; continue; }
+        if (c === ',' || c === ' ' || c === '\n' || c === '\t') {
+          if (c === ',') {
+            if (needKey) throw this._err('unexpected comma in flow mapping');
+            needKey = true;
+          }
+          i++; continue;
+        }
         if (c === '#') {
           while (i < s.length && s[i] !== '\n') i++;
           continue;
@@ -4475,6 +4499,7 @@ class StreamParser {
         const r = this._parseFlowEmitting(s.slice(i), _depth + 1);
         safeAssign(obj, key, r.value);
         i += r.endPos;
+        needKey = false;
       }
       this._emit('mappingEnd');
       return { value: obj, endPos: s.length };

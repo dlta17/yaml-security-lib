@@ -124,6 +124,13 @@ checkThrows('seq inline flow dedented closer', '- [\n  1, 2\n]\n');
 checkThrows('own line flow dedented item', 'key:\n  [\n1\n  ]\n');
 checkThrows('flow comment dedented', 'key: [\n# comment\n  1, 2\n  ]\n');
 checkThrows('quoted scalar dedented continuation', 'quoted: "a\nb"\n');
+checkThrows('unbalanced inline flow at eof', 'key: [1, 2\n');
+checkThrows('unbalanced root flow at eof', '[1, 2\n');
+checkThrows('unbalanced flow map at eof', 'key: {a: 1\n');
+checkThrows('empty flow seq entry', 'key: [,]\n');
+checkThrows('empty flow seq entry middle', 'key: [1, , 2]\n');
+checkThrows('empty flow map key', 'key: {,}\n');
+checkThrows('empty flow map entry middle', 'key: {a: 1, , b: 2}\n');
 
 function checkAll(name, yaml) {
   const expected = parseAll(yaml);

@@ -71,6 +71,12 @@ assertEqual(p.parse('key: [\n  1, # one\n  2\n  ]').result, { key: [1, 2] }, 'fl
 assert(!p.parse('key: [\n  1, 2\n]').ok, 'dedented closer rejected');
 assert(!p.parse('- [\n  1, 2\n]').ok, 'dedented seq closer rejected');
 assert(!p.parse('key:\n  [\n1\n  ]').ok, 'own line dedented item rejected');
+assert(!p.parse('key: [1, 2').ok, 'unbalanced inline flow rejected');
+assert(!p.parse('[1, 2').ok, 'unbalanced root flow rejected');
+assert(!p.parse('key: {,}').ok, 'empty flow map key rejected');
+assert(!p.parse('key: {a: 1, , b: 2}').ok, 'empty flow map entry rejected');
+assertEqual(p.parse('key: {a: 1, b: 2,}').result, { key: { a: 1, b: 2 } }, 'trailing comma in flow map');
+assertEqual(p.parse('key: {}').result, { key: {} }, 'empty flow map');
 
 // ── Duplicate keys ──
 assert(!p.parse('x: 1\nx: 2').ok, 'duplicate key detected');
