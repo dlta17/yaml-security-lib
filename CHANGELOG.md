@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.2 (2026-08-06)
+
+### Packaging
+- **Rebuilt bundles**: `src/index.cjs`, `src/index.min.js` and `dist/` now ship the `tree()` export (previously stale — npm consumers got a version without the tree event stream).
+- **TypeScript**: `tree()` declared in `src/index.d.ts`.
+- **Tests**: `test/tree-suite.js` added to `npm test` (all suites green: 127 + 262 + 51 + 1645 + 262 tree).
+
+### Citation
+- **Zenodo DOI: [10.5281/zenodo.21809992](https://doi.org/10.5281/zenodo.21809992)** — same DOI as v1.10.0; a new DOI is minted per future release.
+- **ORCID: [0009-0008-4915-4787](https://orcid.org/0009-0008-4915-4787)**
+
 ## 1.10.1 (2026-08-06)
 
 ### Tree Event Stream (`tree()`)

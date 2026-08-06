@@ -1,6 +1,6 @@
 {
   "name": "yaml-security-lib",
-  "version": "1.10.1",
+  "version": "1.10.2",
   "description": "Secure YAML parser — duplicate key detection, alias depth limiting, prototype pollution prevention",
   "main": "index.cjs",
   "types": "src/index.d.ts",
@@ -23,7 +23,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "test": "node test/index.js && node test/fuzz.js && node test/stream.js && node test/stream-fuzz.js",
+    "test": "node test/index.js && node test/fuzz.js && node test/stream.js && node test/stream-fuzz.js && node test/tree-suite.js",
     "example": "node examples/basic.js",
     "build": "npm run build:cjs && npm run build:esm && npm run build:browser",
     "build:cjs": "rollup -c --environment FORMAT:cjs",

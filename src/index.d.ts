@@ -123,6 +123,14 @@ export function parseAll(yamlStr: string, opts?: ParseOptions): any[];
 export function dump(value: any, opts?: DumpOptions): string;
 
 /**
+ * Emit the YAML Test Suite-style tree event stream for a YAML string:
+ * `+STR` / `+DOC` / `+MAP` / `+SEQ` / `=VAL` / `=ALI` lines with scalar
+ * styles, anchors, tags and flow-style markers. Throws on parse error.
+ */
+export function tree(yamlStr: string, opts?: ParseOptions): string;
+
+
+/**
  * Streaming parser options. All limits are enforced WHILE streaming,
  * so a malicious document is rejected before the whole input is consumed.
  */
