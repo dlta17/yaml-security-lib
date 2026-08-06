@@ -33,6 +33,16 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Test stream fuzz (js-yaml oracle)
         run: node test/stream-fuzz.js
+      - name: Fetch YAML Test Suite
+        run: git clone --depth 1 https://github.com/yaml/yaml-test-suite.git /tmp/yaml-test-suite
+      - name: Test YAML Test Suite conformance
+        run: node test/yaml-test-suite.js
+        env:
+          YAML_SUITE_DIR: /tmp/yaml-test-suite/src
+      - name: Test tree() event-stream conformance
+        run: node test/tree-suite.js
+        env:
+          YAML_SUITE_DIR: /tmp/yaml-test-suite/src
       - name: Build + test CJS
         shell: bash
         run: |

@@ -277,7 +277,7 @@ normal.parse("&a 1\n&b *a\n&c *b\n&d *c\nkey: *d")
 
 ## YAML Test Suite
 
-yaml-security-lib passes **all 406** official [YAML Test Suite](https://github.com/yaml/yaml-test-suite) test cases (100%, 351 files) — including every SHOULD-FAIL security-relevant case — while enforcing its security protections (duplicate keys, alias bombs, prototype pollution, expansion limits).
+yaml-security-lib passes **all 406** official [YAML Test Suite](https://github.com/yaml/yaml-test-suite) test cases (100%, 351 files) — including every SHOULD-FAIL security-relevant case — while enforcing its security protections (duplicate keys, alias bombs, prototype pollution, expansion limits). The [`tree()`](#-treeyamlstr-opts--string) event stream matches **262/262** conformance cases (the 82 SHOULD-FAIL cases throw as expected).
 
 ## Schema System
 
@@ -332,6 +332,24 @@ parse('x: !upper hello', { types: [upperType] })
 
 parseAll('---\nx: !upper hello\n---\ny: 2', { schema: mySchema })
 ```
+
+### `tree(yamlStr, opts?)` → `string`
+
+Renders a normalized YAML event stream (libyaml-style `+MAP` / `-MAP` / `+SEQ` / `-SEQ` / `=VAL` / `=ALI` events with resolved anchors, tags, and style prefixes) without constructing the object tree. Useful for debugging, canonicalization, and diffing YAML documents.
+
+```js
+import { tree } from 'yaml-security-lib'
+
+tree('a: 1\nb: [x, y]\n')  // +STR +DOC +MAP =VAL :a =VAL :1 …
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `schema` | `DEFAULT_SCHEMA` | Schema used to resolve tags |
+| `types` | `[]` | Extra custom types (like `parse`) |
+| `keepRaw` | `false` | Emit raw scalar text instead of normalized values |
+
+Passes **262/262** tree conformance cases from the official YAML Test Suite (the remaining 82 are the SHOULD-FAIL cases, which all throw as expected).
 
 ### `%TAG` directives
 
@@ -397,11 +415,15 @@ See [LICENSE](LICENSE) (AGPL-3.0) and [LICENSE.COMMERCIAL](LICENSE.COMMERCIAL).
 
 ```bash
 npm install
-npm test        # unit + fuzz + stream + stream-fuzz (js-yaml oracle)
-node test/tree-suite.js   # tree event-stream conformance vs YAML Test Suite
+npm test        # unit + fuzz + stream + stream-fuzz + YAML Test Suite + tree suite
 ```
 
+- The YAML Test Suite + tree suite require the suite checkout; set `YAML_SUITE_DIR`
+  (e.g. `/home/nedal/yaml-test-suite/src`). If the dir is missing they skip cleanly,
+  and CI clones the suite automatically.
 - Zero runtime dependencies; rollup (dev-only) rebuilds the bundles.
+- Bundles are gitignored, but `npm pack`/`npm publish` runs `prepack` which
+  rebuilds them automatically — published tarballs always ship fresh builds.
 - Implicit timestamps resolve to **strings** (YAML 1.2 core); only explicit
   `!!timestamp` yields a `Date` — `parse()` and the stream must always agree.
 - The stream-fuzz oracle is **js-yaml v5**; do not downgrade to v4 (YAML 1.1

@@ -4,6 +4,11 @@ import { tree } from '../src/index.js';
 
 const suiteDir = process.env.YAML_SUITE_DIR || '/home/nedal/yaml-test-suite/src';
 
+if (!fs.existsSync(suiteDir)) {
+  console.log('Tree event stream suite: SKIPPED (suite dir not found: ' + suiteDir + '); set YAML_SUITE_DIR to enable');
+  process.exit(0);
+}
+
 let matched = 0;
 let failed = 0;
 let errored = 0;

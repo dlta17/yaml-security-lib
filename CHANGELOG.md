@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.4 (2026-08-06)
+
+### Tooling
+- `npm test` now also runs `test/yaml-test-suite.js` (406 cases) and `test/tree-suite.js` (262 + 82 expected throws); both skip cleanly when `YAML_SUITE_DIR` is not present.
+- Added `prepack` script that rebuilds the CJS/ESM bundles automatically, so `npm publish`/`npm pack` can never ship stale bundles again.
+- CI: clones the official YAML Test Suite and runs both conformance suites on Node 20/22.
+- README: documented the `tree()` API and updated the testing section.
+
 ## 1.10.3 (2026-08-06)
 
 ### Citation

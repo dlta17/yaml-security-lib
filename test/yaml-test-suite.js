@@ -3,6 +3,12 @@ import path from 'path';
 import { parse, YamlSecurity } from '../src/index.js';
 
 const suiteDir = process.env.YAML_SUITE_DIR || '/home/nedal/yaml-test-suite/src';
+
+if (!fs.existsSync(suiteDir)) {
+  console.log('YAML Test Suite: SKIPPED (suite dir not found: ' + suiteDir + '); set YAML_SUITE_DIR to enable');
+  process.exit(0);
+}
+
 const parser = new YamlSecurity();
 
 let passed = 0;
