@@ -129,6 +129,77 @@ export function dump(value: any, opts?: DumpOptions): string;
  */
 export function tree(yamlStr: string, opts?: ParseOptions): string;
 
+/** A parsed node in the AST produced by `parseTree` / `assembleAST`. */
+export interface TreeNode {
+  type: 'document' | 'mapping' | 'sequence' | 'scalar' | 'alias';
+  /** Children for `mapping` (array of `{ key, value }`) and `sequence`. */
+  items?: Array<TreeNode | { key: TreeNode; value: TreeNode }>;
+  /** True if the collection used flow style `{}` / `[]`. */
+  flow?: boolean;
+  /** Anchor name, if any. */
+  anchor?: string;
+  /** Resolved tag, if any. */
+  tag?: string;
+  /** Scalar content, or alias target name for `'alias'`. */
+  value?: any;
+  /** `'plain'` / `'single'` / `'double'` / `'literal'` / `'folded'`. */
+  style?: string;
+  /** Present on `document` nodes: explicit `---` / `...` markers. */
+  explicitStart?: boolean;
+  explicitEnd?: boolean;
+}
+
+/** A flat AST event record from the internal parse. */
+export interface TreeEvent {
+  /** Event type: `'doc'`, `'docEnd'`, `'c'` (collection start), `'x'` (collection end), `'v'` (scalar), `'al'` (alias). */
+  t: 'doc' | 'docEnd' | 'c' | 'x' | 'v' | 'al';
+  /** Collection kind for `'c'` / `'x'`: `'map'` or `'seq'`. */
+  k?: 'map' | 'seq';
+  /** Style id: `1` plain, `2` single, `3` double, `4` literal, `5` folded; `'flow'` for flow collections. */
+  s?: number | 'flow';
+  /** Anchor name. */
+  a?: string;
+  /** Resolved tag. */
+  g?: string;
+  /** Scalar content. */
+  c?: string;
+  /** Alias target name (for `'al'`). */
+  n?: string;
+  /** Explicit document markers (for `'doc'` / `'docEnd'`). */
+  e?: boolean;
+}
+
+/**
+ * Parse YAML into a nested document AST (one node per document).
+ * Throws on parse error.
+ */
+export function parseTree(yamlStr: string, opts?: ParseOptions): TreeDocument[];
+
+export interface TreeDocument {
+  type: 'document';
+  explicitStart?: boolean;
+  explicitEnd?: boolean;
+  node?: TreeNode;
+}
+
+/** Render a flat event stream into the libyaml-style tree string. */
+export function renderTree(events: TreeEvent[]): string;
+
+/** Build the nested document AST from a flat event stream. */
+export function assembleAST(events: TreeEvent[]): TreeDocument[];
+
+/**
+ * Copy of the current global default limits (reflects `setLimits`):
+ * `{ maxNodes, maxAlias, maxAliasDepth, maxExpansion, maxInputMB, maxInputBytes, maxStringLength, maxKeys, maxDepth }`.
+ */
+export function getBaseConfig(): Required<SetLimitsOptions> & { maxInputMB: number };
+
+/** Decode YAML double-quoted escapes (`\n`, `\t`, `\xNN`, `\uNNNN`, `\UNNNNNNNN`, …). Throws `YAMLException` on unknown escapes. */
+export function unescapeYaml(str: string): string;
+
+/** UTF-8 byte length of a string (Node `Buffer` or browser `TextEncoder`). */
+export function byteLength(str: string): number;
+
 
 /**
  * Streaming parser options. All limits are enforced WHILE streaming,

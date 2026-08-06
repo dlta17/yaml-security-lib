@@ -351,6 +351,54 @@ tree('a: 1\nb: [x, y]\n')  // +STR +DOC +MAP =VAL :a =VAL :1 …
 
 Passes **262/262** tree conformance cases from the official YAML Test Suite (the remaining 82 are the SHOULD-FAIL cases, which all throw as expected).
 
+### `parseTree(yamlStr, opts?)` → `Array<Node>`
+
+Like `tree()`, but returns a nested AST instead of a string — one node per document:
+
+```js
+import { parseTree } from 'yaml-security-lib'
+
+const [doc] = parseTree('a: 1\nb: [x, y]\n')
+// doc.type === 'document'
+// doc.node = { type: 'mapping', flow: false, items: [
+//   { key: { type: 'scalar', style: 'plain', value: 'a' }, value: { type: 'scalar', style: 'plain', value: '1' } },
+// ] }
+```
+
+| Node field | Description |
+|------------|-------------|
+| `type` | `'document'` / `'mapping'` / `'sequence'` / `'scalar'` / `'alias'` |
+| `items` | Children for `mapping` (array of `{ key, value }`) and `sequence` |
+| `flow` | `true` if the collection used flow style `{}` / `[]` |
+| `anchor` / `tag` | Anchor name / resolved tag (if any) |
+| `value` | Scalar content (or alias target name for `'alias'`) |
+| `style` | `'plain'` / `'single'` / `'double'` / `'literal'` / `'folded'` |
+
+### `renderTree(events)` → `string`
+
+Renders a flat event stream (the `{ t, k, s, a, g, c, n, e }` objects produced during parsing) into the libyaml-style `+STR`/`+DOC`/`+MAP`/`=VAL`/`-STR` text that `tree()` returns. Useful if you drive the parser yourself:
+
+```js
+import { renderTree } from 'yaml-security-lib'
+
+renderTree([{ t: 'doc' }, { t: 'c', k: 'map' }, { t: 'v', c: 'a', s: 1 }, { t: 'x', k: 'map' }, { t: 'docEnd' }])
+// +STR +DOC +MAP =VAL :a -MAP -DOC -STR
+```
+
+### `assembleAST(events)` → `Array<Node>`
+
+The inverse of `renderTree`: builds the nested document AST (same node shape as `parseTree`) from a flat event stream. `parseTree` is exactly `assembleAST` applied to the events of an internal parse.
+
+### Utility helpers
+
+```js
+import { getBaseConfig, unescapeYaml, byteLength } from 'yaml-security-lib'
+```
+
+- `getBaseConfig()` → copy of the current default limits: `{ maxNodes: 10000, maxAlias: 100, maxAliasDepth: 10, maxExpansion: 100000, maxInputMB: 1, maxInputBytes: 1048576, maxStringLength: 0, maxKeys: 0, maxDepth: 50 }` (reflects `setLimits`).
+- `unescapeYaml(str)` → decode YAML double-quoted escapes (`\n`, `\t`, `\xNN`, `\uNNNN`, `\UNNNNNNNN`, …) into a JS string. Throws `YAMLException` on an unknown escape.
+- `byteLength(str)` → UTF-8 byte length (works in Node and browsers via `Buffer` or `TextEncoder`).
+
 ### `%TAG` directives
 
 Custom tag handles via `%TAG` directives are expanded and resolved against the active Schema:

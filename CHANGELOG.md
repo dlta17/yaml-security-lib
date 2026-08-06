@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.10.5 (2026-08-06)
+
+### Docs & Types
+- Documented the remaining public exports: `parseTree`, `renderTree`, `assembleAST` (with `TreeNode` / `TreeEvent` / `TreeDocument` types), and `getBaseConfig`, `unescapeYaml`, `byteLength` in README + `src/index.d.ts`.
+
 ## 1.10.4 (2026-08-06)
 
 ### Tooling
