@@ -6,7 +6,7 @@
 [![Bundle Size](https://img.shields.io/bundlephobia/min/yaml-security-lib)](https://bundlephobia.com/package/yaml-security-lib)
 [![TypeScript](https://img.shields.io/badge/TypeScript-ready-blue)](https://www.npmjs.com/package/yaml-security-lib)
 [![Snyk Advisor](https://img.shields.io/badge/Snyk%20Advisor-Recommended-brightgreen)](https://snyk.io/advisor/npm-package/yaml-security-lib)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21809992.svg)](https://doi.org/10.5281/zenodo.21809992)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21684897.svg)](https://doi.org/10.5281/zenodo.21684897)
 [![ORCID](https://img.shields.io/badge/ORCID-0009--0008--4915--4787-a6ce39)](https://orcid.org/0009-0008-4915-4787)
 
 **Secure YAML parser for JavaScript.** Protects against:

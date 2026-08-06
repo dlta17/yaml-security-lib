@@ -8,7 +8,7 @@
 - **Tests**: `test/tree-suite.js` added to `npm test` (all suites green: 127 + 262 + 51 + 1645 + 262 tree).
 
 ### Citation
-- **Zenodo DOI: [10.5281/zenodo.21809992](https://doi.org/10.5281/zenodo.21809992)** — same DOI as v1.10.0; a new DOI is minted per future release.
+- **Zenodo DOI: [10.5281/zenodo.21684897](https://doi.org/10.5281/zenodo.21684897)** — same DOI as v1.10.0; a new DOI is minted per future release.
 - **ORCID: [0009-0008-4915-4787](https://orcid.org/0009-0008-4915-4787)**
 
 ## 1.10.1 (2026-08-06)
@@ -22,7 +22,7 @@
 - **Tests**: new `test/tree-suite.js` regression suite — **262 matched, 0 failed, 0 errored, 82 expected throws**.
 
 ### Citation
-- **Zenodo DOI: [10.5281/zenodo.21809992](https://doi.org/10.5281/zenodo.21809992)** — archived at v1.10.0; this patch release shares the same DOI.
+- **Zenodo DOI: [10.5281/zenodo.21684897](https://doi.org/10.5281/zenodo.21684897)** — archived at v1.10.0; this patch release shares the same DOI.
 - **ORCID: [0009-0008-4915-4787](https://orcid.org/0009-0008-4915-4787)**
 
 ## 1.10.0 (2026-08-05)
