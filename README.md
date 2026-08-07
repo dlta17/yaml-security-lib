@@ -366,6 +366,7 @@ Plain-scalar `:` handling matches **js-yaml** in both the batch and streaming pa
 - Flow collections require commas between entries: `{a: 1 b: 2}` and `[a: 1 b: 2]` throw `missed comma between flow collection entries`.
 - Block plain scalars reject `: ` key separators: `key: a: b` and `key: a\n  b: c` throw `bad indentation of a mapping entry`, while attached colons stay literal (`key: a:b`, `key: http://x`, `key: 10:30:00`).
 - Continuation lines fold into the plain scalar in both parsers, whatever their leading indicator (`key: a\n  - b` → `"a - b"`, `key: a\n  "b"`, `key: a\n  &x b`, `key: a\n  ? b`, `key: a\n  [1, 2]`, `key: a\n  |\n  text`, `key: a\n  ...`). A column-0 `...`/`---` still ends/starts a document, and multi-document streams match `js-yaml`'s `loadAll`.
+- Compact quoted-key mappings are accepted PyYAML-style: `"a":b` → `{a: 'b'}` (js-yaml rejects the attached value with "a whitespace character is expected after the key-value separator"). The keys flow through the duplicate/prototype-pollution checks — `"__proto__":x` is blocked, `"a":b\n"a":c` is a duplicate key, `- "a":b` and `x:\n  "a":b` nest correctly.
 
 ## Schema System
 

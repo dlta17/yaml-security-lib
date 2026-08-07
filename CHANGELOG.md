@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.12.3 (2026-08-07)
+
+### Fixes: compact quoted-key mappings (PyYAML-style) now flow through the security checks
+- **`"a":b` (quoted key, value attached to the `:` with no whitespace) now parses as a real mapping entry** `{a: 'b'}` in block context — root, nested, sequence-item and multi-line forms. Previously the parser split off the key but silently dropped the value (`parse('"a":b')` → `"a"`) and the key bypassed the duplicate/prototype-pollution checks.
+- Because the shape now builds a real entry, the existing checks fire automatically: `"__proto__":x` / `"constructor":x` are blocked, `"a":b\n"a":c` is a duplicate key, `- "__proto__":x` is blocked in sequences, and `x:\n  "a":b` nests correctly.
+- Unchanged: `"a":` → `{a: null}`, `"a"` → `"a"`, `"a": b` (spaced) → `{a: 'b'}`, and plain-scalar continuation folding (`key: a\n  "b":c` still folds to `{key: 'a "b":c'}`). js-yaml rejects the compact form ("a whitespace character is expected after the key-value separator within a block mapping"); we accept it PyYAML-style so the security checks apply to the shape.
+- Tests: `test/index.js` +25, `test/stream.js` +18. Full suite green: 224 + 262 + 142 + 1645 + 406 (YAML Test Suite) + 262 + 95 + 60.
+
 ## 1.12.2 (2026-08-07)
 
 ### Fixes: block plain-scalar continuation folding parity with js-yaml (batch + stream)
