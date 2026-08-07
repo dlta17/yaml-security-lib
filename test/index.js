@@ -83,6 +83,19 @@ assertEqual(p.parse('key: [a: [1, 2], b: {c: 3}]').result, { key: [{ a: [1, 2] }
 assertEqual(p.parse('key: [? a, ? b]').result, { key: [{ a: null }, { b: null }] }, 'flow seq explicit keys');
 assertEqual(p.parse('key: {? a : 1, ? b : 2}').result, { key: { a: 1, b: 2 } }, 'flow map explicit keys');
 assertEqual(p.parse('key: {a}').result, { key: { a: null } }, 'flow map key no value');
+// Missing comma between flow entries (js-yaml parity)
+assert(!p.parse('{a: 1 b: 2}').ok, 'missing comma in flow map rejected');
+assert(!p.parse('{a: 1 b: 2 c: 3}').ok, 'missing comma (3 entries) rejected');
+assert(!p.parse('[a: 1 b: 2]').ok, 'missing comma in flow seq rejected');
+assert(!p.parse('{a: 1, b: 2 c: 3}').ok, 'missing comma after value rejected');
+assert(!p.parse('{a: 1 b: 2, c: 3}').ok, 'missing comma before comma rejected');
+assertEqual(p.parse('{a: b:c}').result, { a: 'b:c' }, 'attached colon stays scalar');
+assertEqual(p.parse('{a: http://x}').result, { a: 'http://x' }, 'scheme colon stays scalar');
+assertEqual(p.parse('{a: 1:b}').result, { a: '1:b' }, 'number+colon stays scalar');
+assertEqual(p.parse('{a: :3}').result, { a: ':3' }, 'colon-prefixed value stays scalar');
+assert(!p.parse('{a: : 3}').ok, 'colon-space value rejected');
+assertEqual(p.parse('{a: {b:c}}').result, { a: { 'b:c': null } }, 'nested attached-colon key');
+assertEqual(p.parse('[1: 2]').result, [{ 1: 2 }], 'flow seq numeric implicit key');
 
 // ── Duplicate keys ──
 assert(!p.parse('x: 1\nx: 2').ok, 'duplicate key detected');

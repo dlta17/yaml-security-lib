@@ -681,6 +681,43 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return -1;
   }
 
+  // First `:` that would start a mapping key inside a plain scalar in flow
+  // context (a colon followed by whitespace or a flow indicator, mirroring
+  // js-yaml's readPlainScalar). Returns -1 when the scalar contains none.
+  function flowScalarKeySep(s) {
+    let quote = null;
+    let depth = 0;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (quote) {
+        if (quote === '"') {
+          if (ch === '\\') { i++; continue; }
+          if (ch === '"') quote = null;
+        } else {
+          if (ch === "'" && s[i + 1] === "'") { i++; continue; }
+          if (ch === "'") quote = null;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        if (i === 0 || /[\s,:\[\]{]/.test(s[i - 1])) quote = ch;
+        continue;
+      }
+      if (ch === '#' && (i === 0 || s[i - 1] === ' ' || s[i - 1] === '\t')) {
+        while (i < s.length && s[i] !== '\n') i++;
+        continue;
+      }
+      if (ch === '[' || ch === '{') { depth++; continue; }
+      if (ch === ']' || ch === '}') { if (depth === 0) return -1; depth--; continue; }
+      if (ch === ',' && depth === 0) return -1;
+      if (ch === ':' && depth === 0) {
+        if (i + 1 >= s.length || s[i + 1] === ' ' || s[i + 1] === '\t' || s[i + 1] === '\n' || s[i + 1] === '\r' || s[i + 1] === '}' || s[i + 1] === ']' || s[i + 1] === ',')
+          return i;
+      }
+    }
+    return -1;
+  }
+
   // End offset of a flow sequence item: the first `,`, `]` or `}` at depth 0,
   // honoring quotes, flow brackets and comments.
   function scanFlowItemEnd(s) {
@@ -1276,6 +1313,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     const sameLineComment = s.search(/(^|[ \t])#[^\n]*/);
     if (sameLineComment >= 0 && (commentStart < 0 || sameLineComment < commentStart)) commentStart = sameLineComment;
     if (commentStart >= 0 && (end < 0 || commentStart < end)) end = commentStart;
+    // In flow context a plain scalar ends at a `:` that starts a mapping key
+    // (colon followed by whitespace or a flow indicator). This is what makes
+    // `{a: 1 b: 2}` a missed-comma error rather than a scalar "1 b: 2".
+    if (!_blockValue) {
+      const keySep = flowScalarKeySep(s);
+      if (keySep === 0) throw new YAMLException('YAML: missed comma between flow collection entries');
+      if (keySep > 0 && (end < 0 || keySep < end)) end = keySep;
+    }
     if (end < 0) {
       if (_inValue && s.indexOf('\n') >= 0 && findKeySep(s) >= 0)
         throw new YAMLException('YAML: missing separating comma in flow mapping');
@@ -3346,6 +3391,42 @@ function flowKeySepTop(s) {
   return -1;
 }
 
+// First `:` that would start a mapping key inside a plain scalar in flow
+// context (streaming variant). Returns -1 when the scalar contains none.
+function flowScalarKeySepTop(s) {
+  let quote = null;
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (quote === '"') {
+        if (ch === '\\') { i++; continue; }
+        if (ch === '"') quote = null;
+      } else {
+        if (ch === "'" && s[i + 1] === "'") { i++; continue; }
+        if (ch === "'") quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      if (i === 0 || /[\s,:\[\]{]/.test(s[i - 1])) quote = ch;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /[\s\n]/.test(s[i - 1]))) {
+      while (i < s.length && s[i] !== '\n') i++;
+      continue;
+    }
+    if (ch === '[' || ch === '{') { depth++; continue; }
+    if (ch === ']' || ch === '}') { if (depth === 0) return -1; depth--; continue; }
+    if (ch === ',' && depth === 0) return -1;
+    if (ch === ':' && depth === 0) {
+      if (i + 1 >= s.length || s[i + 1] === ' ' || s[i + 1] === '\t' || s[i + 1] === '\n' || s[i + 1] === '\r' || s[i + 1] === '}' || s[i + 1] === ']' || s[i + 1] === ',')
+        return i;
+    }
+  }
+  return -1;
+}
+
 // End offset of a flow sequence item (streaming variant): the first `,`, `]`
 // or `}` at depth 0, honoring quotes, flow brackets and comments.
 function scanFlowItemEndTop(s) {
@@ -4566,6 +4647,8 @@ class StreamParser {
           while (i < s.length && s[i] !== '\n') i++;
           continue;
         }
+        if (c === ':' && !needKey)
+          throw this._err('missed comma between flow collection entries');
         let key;
         if (s[i] === '"' || s[i] === "'") {
           const quote = s[i];
@@ -4581,7 +4664,9 @@ class StreamParser {
           i = close + 1;
         } else {
           let j = i;
-          while (j < s.length && s[j] !== ':' && s[j] !== ',' && s[j] !== '}' && s[j] !== '\n') j++;
+          const kks = flowScalarKeySepTop(s.slice(i));
+          if (kks >= 0) j = i + kks;
+          else { while (j < s.length && s[j] !== ',' && s[j] !== '}' && s[j] !== '\n') j++; }
           key = s.slice(i, j).trim();
           if (/^\?[ \t\n\r]*$/.test(key)) key = '';
           else if (/^\?[ \t\n\r]/.test(key)) key = key.replace(/^\?[ \t\n\r]*/, '');
@@ -4593,7 +4678,13 @@ class StreamParser {
         seen.add(key);
         while (i < s.length) {
           const cc = s[i];
-          if (cc === ' ' || cc === '\t' || cc === '\n' || cc === ':') { i++; continue; }
+          if (cc === ' ' || cc === '\t' || cc === '\n') { i++; continue; }
+          break;
+        }
+        if (i < s.length && s[i] === ':') i++;
+        while (i < s.length) {
+          const cc = s[i];
+          if (cc === ' ' || cc === '\t' || cc === '\n') { i++; continue; }
           if (cc === '#') { while (i < s.length && s[i] !== '\n') i++; continue; }
           break;
         }
@@ -4679,6 +4770,9 @@ class StreamParser {
       if (close > 0) { const v = s.slice(1, close).replace(/''/g, "'"); return { value: this._flowScalar(v, s), endPos: close + 1 }; }
     }
     let end = s.search(/[,})\]\n]/);
+    const keySep = flowScalarKeySepTop(s);
+    if (keySep === 0) throw this._err('missed comma between flow collection entries');
+    if (keySep > 0 && (end < 0 || keySep < end)) end = keySep;
     if (end < 0) {
       let raw = s;
       const hv = raw.search(/#(?=[ \t])/);

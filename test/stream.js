@@ -102,6 +102,11 @@ const cases = {
   'flow seq explicit keys': 'key: [? a, ? b]\n',
   'flow map explicit keys': 'key: {? a : 1, ? b : 2}\n',
   'flow map key no value': 'key: {a}\n',
+  'flow attached colon scalar': 'key: {a: b:c}\n',
+  'flow scheme colon scalar': 'key: {a: http://x}\n',
+  'flow colon value': 'key: {a: :3}\n',
+  'flow nested attached colon key': 'key: {a: {b:c}}\n',
+  'flow seq numeric implicit key': 'key: [1: 2]\n',
 };
 
 const overrides = {
@@ -137,6 +142,13 @@ checkThrows('empty flow seq entry', 'key: [,]\n');
 checkThrows('empty flow seq entry middle', 'key: [1, , 2]\n');
 checkThrows('empty flow map key', 'key: {,}\n');
 checkThrows('empty flow map entry middle', 'key: {a: 1, , b: 2}\n');
+checkThrows('missing comma in flow map', 'key: {a: 1 b: 2}\n');
+checkThrows('missing comma in flow map 3', 'key: {a: 1 b: 2 c: 3}\n');
+checkThrows('missing comma in flow seq', 'key: [a: 1 b: 2]\n');
+checkThrows('missing comma after value', 'key: {a: 1, b: 2 c: 3}\n');
+checkThrows('missing comma before comma', 'key: {a: 1 b: 2, c: 3}\n');
+checkThrows('colon-space value', 'key: {a: : 3}\n');
+checkThrows('empty colon value', 'key: {a: :}\n');
 
 function checkAll(name, yaml) {
   const expected = parseAll(yaml);
