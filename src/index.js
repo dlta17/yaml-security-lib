@@ -13,6 +13,10 @@ import { lintCore, LINT_RULES } from './lint.js';
 
 // ── Configuration ────────────────────────────────────────
 
+// Global parser limits. `maxNodes`/`maxExpansion` guard against alias-bomb
+// and billion-laughs expansion, `maxInputBytes`/`maxInputMB` bound input size,
+// `maxStringLength`/`maxKeys`/`maxDepth` bound single values, and `maxAlias` /
+// `maxAliasDepth` bound anchor/alias chains. `0` means "unlimited".
 const DEFAULTS = {
   maxNodes: 10_000,
   maxAlias: 100,
@@ -78,6 +82,10 @@ export class YAMLException extends Error {
 
 // ── Prototype Pollution Guard ────────────────────────────
 
+// Assign `obj[key] = value` while refusing keys that would pollute the
+// prototype chain. This is the single choke point every mapping entry goes
+// through (batch + streaming), so `__proto__`, `constructor` and `prototype`
+// keys are always rejected with a Security error.
 function safeAssign(obj, key, value) {
   if (key === '__proto__' || key === 'constructor' || key === 'prototype')
     throw new YAMLException('Security: cannot set key "' + key + '" — prototype pollution blocked');
@@ -86,12 +94,16 @@ function safeAssign(obj, key, value) {
 
 // ── YAML Escape Unescaping ───────────────────────────────
 
+// Escape-sequence table for double-quoted scalars (YAML 1.2 core escapes).
 const ESC_MAP = {
   '0': '\x00', 'a': '\x07', 'b': '\x08', 't': '\t', 'n': '\n',
   'v': '\x0b', 'f': '\x0c', 'r': '\r', 'e': '\x1b',
   ' ': ' ',  '"': '"',  '/': '/', '\\': '\\', 'N': '\x85',
   '_': '\xa0', 'L': '\u2028', 'P': '\u2029', '\t': '\t',
 };
+// Translate `\x..` / `\u....` / `\U........` / named escape sequences inside a
+// double-quoted scalar into the characters they represent. Unknown escapes
+// and malformed hex lengths throw. Used by both the batch and stream parsers.
 function unescapeYaml(s) {
   return s.replace(/\\(x[\da-fA-F]{1,2}|u[\da-fA-F]{4}|U[\da-fA-F]{8}|.)/g, (m, seq) => {
     const ch = seq[0];
@@ -115,6 +127,8 @@ function unescapeYaml(s) {
 
 // ── Byte length (works in Node & browser) ────────────────
 
+// UTF-8 byte length of a string, using Buffer in Node and TextEncoder in
+// browsers (used for the input-size limits).
 function byteLength(s) {
   if (typeof Buffer !== 'undefined') return Buffer.byteLength(s, 'utf8');
   if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).length;
@@ -123,6 +137,7 @@ function byteLength(s) {
 
 // ── Base64 decode (Node & browser) ───────────────────────
 
+// Decode base64 into a Uint8Array/Buffer for `!!binary` values.
 function decodeBase64(s) {
   if (typeof Buffer !== 'undefined') return Buffer.from(s, 'base64');
   return Uint8Array.from(atob(s), c => c.charCodeAt(0));
@@ -131,6 +146,8 @@ function decodeBase64(s) {
 // ── YAML 1.2 implicit type detection ─────────────────────
 
 const TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:Z|([+-]\d{2})(?::?(\d{2}))?)?)?$/;
+// Parse a YAML 1.1-style timestamp string into a Date (UTC-normalized).
+// Returns null when the string does not match the timestamp shape.
 function parseTimestamp(s) {
   const m = s.match(TIMESTAMP_RE);
   if (!m) return null;
@@ -297,6 +314,7 @@ const DEFAULT_SCHEMA = new Schema()
     resolve: () => true,
   }));
 
+// Global schema used when no per-call schema/type override is given.
 let _baseSchema = DEFAULT_SCHEMA;
 
 // AST event kinds for the tree()/parseTree() collectors. Scalar styles follow
@@ -306,6 +324,38 @@ const AST_BLOCK = 0, AST_FLOW = 1;
 
 // ── YAML Parser ──────────────────────────────────────────
 
+/**
+ * Parse a single YAML document into a plain JS value (recursive-descent
+ * batch parser, the core of the whole library).
+ *
+ * The parser works over `yamlStr` split into lines. Each entry runs through
+ * `safeAssign`, so duplicate keys and prototype-polluting keys are rejected
+ * at the point of assignment. Anchors/aliases are tracked with depth and
+ * expansion counters so anchor bombs are caught before they expand.
+ *
+ * Security limits enforced here (all via the shared `state` counters):
+ *  - `maxDepth` — block nesting depth (recursion guard)
+ *  - `maxInputBytes` — input size
+ *  - `maxNodes` / `maxExpansion` — produced node counts (alias-bomb guard)
+ *  - `maxAlias` — total alias expansions
+ *  - `maxAliasDepth` — anchor alias chain depth
+ *  - `maxStringLength` — per-string length
+ *  - `maxKeys` — keys per mapping
+ *
+ * When `state._astOn` is true the parser also appends a flat AST event stream
+ * (`aev`/`aContainer`/`aScalar`/`aAlias`) to `state._ast` so `tree()` and
+ * `parseTree()` can render it afterwards.
+ *
+ * @param {string} yamlStr  A single-document YAML string.
+ * @param {object} cfg      Limit configuration (see DEFAULTS).
+ * @param {number} [_depth] Recursion depth (internal).
+ * @param {Schema} [_schema] Type schema (defaults to the global base schema).
+ * @param {object} [_state]  Shared cross-recursion state (anchors, counters,
+ *                           optional AST collector).
+ * @param {object} [_tags]   `%TAG` handle→prefix map for this document.
+ * @returns {*} Parsed JS value. Throws {@link YAMLException} on invalid YAML
+ *             or a security violation.
+ */
 function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
   if (_depth === undefined) _depth = 0;
   if (_schema === undefined) _schema = _baseSchema;
@@ -401,6 +451,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
   }
   const contentLines = lines.slice(docStartIdx);
 
+  // Memoized total "weight" of a node (1 + the weight of every reachable
+  // child). Used to charge the expansion counters for aliased subtrees.
   function nodeWeight(node) {
     if (node === null || typeof node !== 'object') return 1;
     if (nodeWeights.has(node)) return nodeWeights.get(node);
@@ -411,6 +463,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return w;
   }
 
+  // Charge a produced node against the limits and return it unchanged.
+  // Strings are checked against maxStringLength; every object node adds its
+  // `weight` (default: computed via nodeWeight) to the running counters and
+  // the maxNodes/maxExpansion thresholds are re-checked.
   function track(node, weight) {
     if (typeof node === 'string' && cfg.maxStringLength > 0 && node.length > cfg.maxStringLength)
       throw err('string length exceeds limit (' + cfg.maxStringLength + ')');
@@ -434,6 +490,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return node;
   }
 
+  // Register `aname` → `value`. `sourceAnchor` (an alias target) builds a
+  // chain whose depth is tracked and bounded by maxAliasDepth; re-entering an
+  // anchor that is an ancestor of itself is a circular-alias error.
   function setAnchor(aname, value, sourceAnchor) {
     if (sourceAnchor) {
       let cur = sourceAnchor;
@@ -451,6 +510,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     if (sourceAnchor) anchorSources[aname] = sourceAnchor;
   }
 
+  // Look up an alias by name, charging one alias hit against maxAlias.
+  // Unknown aliases resolve to the literal name string (js-yaml behaviour).
   function resolveAlias(aname) {
     if (++state.aliasHits > cfg.maxAlias) throw new YAMLException('YAML: alias expansion limit exceeded (bomb)');
     const val = anchors[aname];
@@ -750,6 +811,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return s.length;
   }
 
+  // Build a YAMLException carrying the current line/column plus a source
+  // snippet of the offending line (used for the `mark` on errors).
   function err(msg, col) {
     const loc = currentLine >= 0 ? ' at line ' + (currentLine + 1) : '';
     const colStr = col !== undefined && currentLine >= 0 ? ', column ' + col : (currentColumn >= 0 && currentLine >= 0 ? ', column ' + currentColumn : '');
@@ -762,6 +825,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return new YAMLException('YAML' + loc + colStr + ': ' + msg + snippet, mark);
   }
 
+  // Leading space count of a line (its indentation column). Tabs are illegal
+  // as indentation in YAML 1.2 except as separation after spaces.
   function getIndent(line) {
     let i = 0;
     while (i < line.length && line[i] === ' ') i++;
@@ -780,9 +845,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return i;
   }
 
-  // Indentation depth for scalar-content lines: a leading tab counts as one
-  // column so tab-looking indentation in scalar values still nests. Keys and
-  // sequence items keep using the strict getIndent (tabs are rejected there).
+  /**
+   * Indentation depth for scalar-content lines: a leading tab counts as one
+   * column so tab-looking indentation in scalar values still nests. Keys and
+   * sequence items keep using the strict getIndent (tabs are rejected there).
+   * @param {string} line
+   * @returns {number}
+   */
   function contentIndent(line) {
     if (line[0] === '\t') return 1;
     let i = 0;
@@ -790,6 +859,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return i;
   }
 
+  // Extract the typed value of a tagged node's inline content (quoted scalar,
+  // flow collection, or raw text) after a `!tag`.
   function tagContentValue(content) {
     const c = content.trim();
     if (c === '') return null;
@@ -818,9 +889,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return c;
   }
 
-  // Find the first real comment marker (`#` preceded by whitespace or at line
-  // start) in a plain-scalar line, ignoring quotes. Returns the content before
-  // it (trimmed of trailing whitespace) and whether a comment was found.
+  /**
+   * Find the first real comment marker (`#` preceded by whitespace or at line
+   * start) in a plain-scalar line, ignoring quotes. Returns the content before
+   * it (trimmed of trailing whitespace) and whether a comment was found.
+   * @param {string} line
+   * @returns {{content: string, commented: boolean}}
+   */
   function splitPlainComment(line) {
     for (let i = 0; i < line.length; i++) {
       if (line[i] === '#') {
@@ -851,6 +926,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return false;
   }
 
+  /**
+   * Parse a scalar token (after surrounding whitespace/comments are trimmed)
+   * into its typed JS value. Handles quoted scalars (with folding and escape
+   * unescaping), multi-line plain-scalar folding, explicit tags, and implicit
+   * schema resolution. Implicit timestamps stay strings (YAML 1.2 core).
+   * @param {string} s Raw scalar token, may contain leading tag/anchor text.
+   * @returns {*} Typed value.
+   */
   function parseScalar(s) {
     let trimmed = s.trim();
 
@@ -959,6 +1042,26 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return val;
   }
 
+  /**
+   * Parse a flow collection node (`[ ... ]`, `{ ... }`) or a flow scalar /
+   * anchor / alias / tag node from a string. Returns `{ value, endPos }`
+   * where `endPos` is the offset just past the consumed node, so callers can
+   * continue scanning the surrounding flow text. Recurses for nested flow
+   * nodes (depth bounded by 100).
+   *
+   * Emits AST events when the collector is active, and enforces the inline
+   * mapping duplicate-key / maxKeys / prototype-pollution checks.
+   * @param {string} str          Remaining flow text (node starts at 0).
+   * @param {number} [_flowDepth] Recursion depth guard.
+   * @param {number} [_line]      Source line number for error columns.
+   * @param {boolean} [_inValue]  True when parsing a mapping value.
+   * @param {boolean} [_blockValue] True for block-context values (plain
+   *                                scalars may not contain `: ` separators).
+   * @param {boolean} [_allowKeySep] True for keys (allow a following `:`).
+   * @param {string|null} [_astAnchor] Anchor to attach to the emitted event.
+   * @param {string|null} [_astTag] Full tag to attach to the emitted event.
+   * @returns {{value: *, endPos: number}}
+   */
   function parseInlineFlow(str, _flowDepth, _line, _inValue, _blockValue, _allowKeySep, _astAnchor, _astTag) {
     if (_flowDepth === undefined) _flowDepth = 0;
     if (_flowDepth > 100) throw new YAMLException('YAML: flow nesting too deep (>100)');
@@ -1350,6 +1453,15 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return { value: track(parseScalar(raw)), endPos: end };
   }
 
+  /**
+   * Parse a block-context value: flow syntax if the string opens a collection,
+   * otherwise a plain/quoted scalar. Used for inline values after `key:`.
+   * @param {string} str
+   * @param {boolean} [allowKeySep]
+   * @param {string|null} [anchor]
+   * @param {string|null} [tag]
+   * @returns {*}
+   */
   function parseInlineValue(str, allowKeySep, anchor, tag) {
     const r = parseInlineFlow(str, 0, 0, false, true, allowKeySep, anchor, tag);
     if (r.value !== undefined) return r.value;
@@ -1359,9 +1471,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
 
   // Extract a block scalar (| or >) starting at index `start` in `sourceLines`.
   // The indicator line (e.g. `|2-`) may carry an explicit indentation digit and
-  // Parse a block scalar header (e.g. `|`, `|2-`, `|-2`, `|+2`, `>1-`) into
-  // { style, ind, chomp }. Returns null when the header is invalid. The
-  // indentation digit and chomping indicator may appear in either order.
+  /**
+   * Parse a block scalar header token (e.g. `|`, `|2-`, `|-2`, `|+2`, `>1-`)
+   * into `{ style, ind, chomp }`. The indentation digit and chomping indicator
+   * may appear in either order. Returns null when the header is invalid.
+   * @param {string} h
+   * @returns {{style: '|'|'>', ind: string, chomp: ''|'-'|'+'}|null}
+   */
   function parseBSHeader(h) {
     const m = h.match(/^(\||>)([0-9+\-]*)$/);
     if (!m) return null;
@@ -1380,9 +1496,16 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return null;
   }
 
-  // Port of js-yaml's getBlockValue(): given the raw content region (lines
-  // with indentation intact) plus contentIndent and chomping, folds or keeps
-  // the block scalar content exactly like the reference implementation.
+  /**
+   * Build the final text of a block scalar from its raw content region. This
+   * is a port of js-yaml's `getBlockValue()`: it applies the detected content
+   * indentation, folded-vs-literal semantics, and the chomping mode.
+   * @param {string} region       Raw content lines (indentation intact).
+   * @param {number} contentIndent Indentation of the content block.
+   * @param {number} chomping     1=clip, 2=strip, 3=keep.
+   * @param {boolean} folded      True for `>` folding, false for `|` literal.
+   * @returns {string}
+   */
   function blockValueFromRegion(region, contentIndent, chomping, folded) {
     const textIndent = contentIndent < 0 ? 0 : contentIndent;
     const lines = region === '' ? [] : (region.endsWith('\n') ? region.slice(0, -1) : region).split('\n');
@@ -1418,7 +1541,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return result;
   }
 
-  // Port of js-yaml's flow-scalar folding (skipFoldedBreaks/foldedBreaks).
+  // Fold one flow-scalar line break: a single break becomes a space, multiple
+  // breaks become the extra newlines (js-yaml's foldedBreaks).
   function foldedBreaks(count) {
     if (count === 1) return ' ';
     return '\n'.repeat(count - 1);
@@ -1434,6 +1558,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     }
     return { position, breaks };
   }
+  /**
+   * Fold the flow-style scalars in `input` (js-yaml's skipFoldedBreaks /
+   * foldedBreaks ports): line breaks fold to spaces, blank lines become
+   * newlines, and a backslash at end-of-line is a continuation that eats the
+   * following line break. Escape sequences are left intact for unescapeYaml.
+   * @param {string} input
+   * @returns {string}
+   */
   function foldFlowScalar(input) {
     let result = '';
     let position = 0;
@@ -1469,8 +1601,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return result + input.slice(captureStart, end);
   }
 
-  // True when the flow construct at the start of `s` is closed (quotes matched,
-  // brackets balanced) so no continuation lines are needed.
+  /**
+   * True when the flow construct at the start of `s` is closed (quotes matched,
+   * brackets balanced) so no continuation lines are needed.
+   * @param {string} s
+   * @returns {boolean}
+   */
   function flowClosed(s) {
     let quote = null;
     let depth = 0;
@@ -1494,9 +1630,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return depth <= 0;
   }
 
-  // Index just past the closing quote/bracket of a complete quoted scalar or
-  // flow collection that starts at `s[0]`, or -1 when `s` does not begin with a
-  // quote/bracket or is not fully closed.
+  /**
+   * Index just past the closing quote/bracket of a complete quoted scalar or
+   * flow collection that starts at `s[0]`, or -1 when `s` does not begin with
+   * a quote/bracket or is not fully closed.
+   * @param {string} s
+   * @returns {number}
+   */
   function closedValueEnd(s) {
     if (!/^["'\[\{]/.test(s)) return -1;
     let quote = null;
@@ -1520,7 +1660,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return -1;
   }
 
-  // Assemble an unclosed flow value together with its continuation lines.
+  // Assemble an unclosed flow value together with its continuation lines
+  // (deeper-indented non-empty lines are folded into the flow text).
   function gatherFlowValue(valStr, ls, i, keyIndent) {
     let joined = valStr;
     let idx = i + 1;
@@ -1536,10 +1677,20 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     return { full: joined, next: idx - 1 };
   }
 
-  // Extract a block scalar (| or >) starting at index `start` in `sourceLines`.
-  // The indicator line (e.g. `|2-`) may carry an explicit indentation digit and
-  // chomping modifier. Returns { text, next } where next is the index after the
-  // consumed content, or null if no block content follows.
+  /**
+   * Extract a block scalar (| or >) starting at index `start` in `sourceLines`.
+   * The indicator line (e.g. `|2-`) may carry an explicit indentation digit and
+   * chomping modifier. Detects the content indentation from the first
+   * non-blank line deeper than the parent, collects the region, and folds it.
+   * @param {string} indicator     The header token, e.g. `|`, `>2-`.
+   * @param {string[]} sourceLines Lines of the current block context.
+   * @param {number} start         Index of the first content line.
+   * @param {number} baseIndent    Indent of the parent key/dash.
+   * @param {number} keyIndent     Indent of the mapping key (for nesting).
+   * @param {boolean} [rootMode]   True when the block scalar is the root node.
+   * @returns {{text: string, next: number}} `next` = index after the consumed
+   *          content (or null if no content follows).
+   */
   function extractBlockScalar(indicator, sourceLines, start, baseIndent, keyIndent, rootMode) {
     const m = parseBSHeader(indicator);
     const style = m.style;
@@ -1665,6 +1816,28 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
   }
   _anchoring = false;
 
+  /**
+   * Parse a block-style mapping or sequence (the workhorse of the batch
+   * parser). Walks `sourceLines` from `startIdx`, honoring indentation to
+   * delimit nesting, and returns a JS object (mapping) or array (sequence).
+   *
+   * Handles implicit keys (`key: value`), explicit keys (`? key`), sequence
+   * dashes, nested block collections, plain-scalar continuation folding,
+   * block scalars (|, >), anchors/aliases, tags, merge keys (`<<`), and
+   * compact quoted-key mappings (`"a":b`, PyYAML-style). Every mapping entry
+   * is written through `safeAssign` and checked against duplicate-key and
+   * maxKeys limits.
+   *
+   * @param {number} startIdx          First line index to parse.
+   * @param {number} baseIndent        Indentation of this block level.
+   * @param {string[]} [sourceLines]   Lines (defaults to contentLines).
+   * @param {number} [blockDepth]      Nesting depth (maxDepth guard).
+   * @param {boolean} [stopAtQuestionKey] Stop at `? ` explicit keys at baseIndent.
+   * @param {number} [endLimit]        Exclusive line index bound.
+   * @param {string|null} [astAnchor]  Anchor to attach to the AST container.
+   * @param {string|null} [astTag]     Full tag to attach to the AST container.
+   * @returns {object|Array} Parsed mapping or sequence.
+   */
   function parseBlock(startIdx, baseIndent, sourceLines, blockDepth, stopAtQuestionKey, endLimit, astAnchor, astTag) {
     if (blockDepth === undefined) blockDepth = 0;
     if (cfg.maxDepth > 0 && blockDepth > cfg.maxDepth)
@@ -2723,7 +2896,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     result = parseBlock(0, 0);
   }
 
-  // Resolve merge keys (<<: *anchor)
+  // Resolve merge keys (<<: *anchor) by copying the source mapping's keys that
+  // were not explicitly overridden. Recurses into nested values.
   function resolveMerges(v) {
     if (Array.isArray(v)) return v.map(resolveMerges);
     if (v instanceof Date || v instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(v))) return v;
@@ -2758,7 +2932,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
 
 // ── YAML Multi-Document ─────────────────────────────────
 
-// True if a `:` (outside quotes/flow) acts as a block key separator.
+/**
+ * True if a `:` (outside quotes/flow) acts as a block key separator — i.e. it
+ * is followed by whitespace, EOL, `]` or `}`. Used to decide whether a token
+ * is a mapping entry (`a: b`) rather than a plain scalar (`a:b`).
+ * @param {string} str
+ * @returns {boolean}
+ */
 function blockColonIn(str) {
   let quote = null;
   let flow = 0;
@@ -2780,6 +2960,18 @@ function blockColonIn(str) {
   return false;
 }
 
+/**
+ * Parse a multi-document YAML stream into an array of JS values. Splits the
+ * input at column-0 `---` / `...` document markers, honors `%YAML` / `%TAG`
+ * directives (with the "directives end mark is expected" rule), and delegates
+ * each document to {@link yamlToJS}. Empty documents become `null`. When
+ * `_state._astOn` is set it also records `doc` / `docEnd` AST events.
+ * @param {string} yamlStr
+ * @param {object} cfg
+ * @param {Schema} [_schema]
+ * @param {object} [_state]
+ * @returns {any[]} One parsed value per document. Throws on invalid YAML.
+ */
 function parseAllYaml(yamlStr, cfg, _schema, _state) {
   if (byteLength(yamlStr) > cfg.maxInputBytes)
     throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
@@ -2886,6 +3078,19 @@ function parseAllYaml(yamlStr, cfg, _schema, _state) {
 
 // ── YAML Dumper ─────────────────────────────────────────
 
+/**
+ * Serialize a JS value to a YAML string. Objects/mappings use block style
+ * until `flowLevel` nesting is reached, then switch to flow style. Scalars
+ * are quoted when they would otherwise be ambiguous (empty, boolean-looking,
+ * numeric-looking, or containing `: ` / comment markers). Cyclic references
+ * throw a YAMLException.
+ *
+ * Options: `indent` (default 2), `flowLevel` (default 6), `sortKeys`,
+ * `lineWidth`, `forceQuotes`, `quotingType` ('single'|'double').
+ * @param {*} value
+ * @param {{indent?: number, flowLevel?: number, sortKeys?: boolean, lineWidth?: number, forceQuotes?: boolean, quotingType?: 'single'|'double'}} [opts]
+ * @returns {string} YAML text.
+ */
 function yamlDump(value, opts = {}) {
   const indent = opts.indent !== undefined ? opts.indent : 2;
   const flowLevel = opts.flowLevel !== undefined ? opts.flowLevel : 6;
@@ -3067,7 +3272,9 @@ export function assembleAST(events) {
   return docs;
 }
 
-// Shared schema resolution used by the standalone parse-family APIs.
+// Shared schema resolution used by the standalone parse-family APIs: an
+// explicit Schema wins, `opts.types` clones the base schema and adds the
+// custom types, otherwise the global base schema is used.
 function resolveSchemaFor(opts) {
   if (opts.schema instanceof Schema) return opts.schema;
   if (Array.isArray(opts.types)) {
@@ -3194,6 +3401,8 @@ export class YamlSecurity {
     this._schema = schema;
   }
 
+  // Merge the global base limits with this instance's constructor overrides.
+  // Only the documented override keys are honored.
   _getCfg() {
     const cfg = { ..._baseCfg };
     const ov = this._overrides;
@@ -3346,11 +3555,15 @@ export class YamlSecurity {
 
 // ── Streaming Parser (SAX-style events) ───────────────────
 
+// STREAM_EVENT_TYPES documents the fixed event vocabulary of the streaming
+// API. Not every event must be handled; `*` receives them all.
 const STREAM_EVENT_TYPES = Object.freeze([
   'documentStart', 'mappingStart', 'sequenceStart', 'key', 'scalar',
   'mappingEnd', 'sequenceEnd', 'documentEnd',
 ]);
 
+// Streaming variant of findKeySep: first `:` (outside quotes) followed by a
+// separator (space/tab/`}`/`]`). Returns the colon index or -1.
 function findKeySepTop(str, start) {
   for (let i = start || 0; i < str.length; i++) {
     if (str[i] === '#') {
@@ -3365,13 +3578,18 @@ function findKeySepTop(str, start) {
   return -1;
 }
 
-// Detect a compact quoted-key mapping entry at block level: a quoted token at
-// the key position whose closing quote is followed (after optional spaces) by
-// a `:` with the value attached (no whitespace after the colon), e.g. `"a":b`
-// or `'a':b`. js-yaml rejects these ("a whitespace character is expected after
-// the key-value separator within a block mapping"); we accept them PyYAML-style
-// so the resulting keys flow through the duplicate/prototype-pollution checks.
-// Returns the colon index, or -1.
+/**
+ * Detect a compact quoted-key mapping entry at block level: a quoted token at
+ * the key position whose closing quote is followed (after optional spaces) by
+ * a `:` with the value attached (no whitespace after the colon), e.g. `"a":b`
+ * or `'a':b`. js-yaml rejects these ("a whitespace character is expected after
+ * the key-value separator within a block mapping"); we accept them PyYAML-style
+ * so the resulting keys flow through the duplicate/prototype-pollution checks.
+ * Returns the colon index, or -1.
+ * @param {string} str
+ * @param {number} [start] Offset at which the quoted key starts.
+ * @returns {number}
+ */
 function compactQuotedKeySep(str, start) {
   start = start || 0;
   const q = str[start];
@@ -3399,10 +3617,14 @@ function compactQuotedKeySep(str, start) {
   return pos;
 }
 
-// First `:` that starts a mapping key inside a block-context plain scalar
-// (js-yaml semantics). Quotes and flow indicators are literal characters in a
-// plain scalar, so any `:` followed by whitespace or EOL — before any comment
-// — is a key separator. Returns -1 when the scalar contains none.
+/**
+ * First `:` that starts a mapping key inside a block-context plain scalar
+ * (js-yaml semantics). Quotes and flow indicators are literal characters in a
+ * plain scalar, so any `:` followed by whitespace or EOL — before any comment
+ * — is a key separator. Returns -1 when the scalar contains none.
+ * @param {string} s
+ * @returns {number}
+ */
 function blockKeySepTop(s) {
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
@@ -3418,9 +3640,13 @@ function blockKeySepTop(s) {
   return -1;
 }
 
-// Detect a key-value separator inside a flow sequence item (streaming
-// variant): the first `:` at flow depth 0, honoring quotes, comments and
-// nested flow collections. Returns -1 when the item is a plain scalar.
+/**
+ * Detect a key-value separator inside a flow sequence item (streaming
+ * variant): the first `:` at flow depth 0, honoring quotes, comments and
+ * nested flow collections. Returns -1 when the item is a plain scalar.
+ * @param {string} s
+ * @returns {number}
+ */
 function flowKeySepTop(s) {
   let quote = null;
   let depth = 0;
@@ -3457,8 +3683,12 @@ function flowKeySepTop(s) {
   return -1;
 }
 
-// First `:` that would start a mapping key inside a plain scalar in flow
-// context (streaming variant). Returns -1 when the scalar contains none.
+/**
+ * First `:` that would start a mapping key inside a plain scalar in flow
+ * context (streaming variant). Returns -1 when the scalar contains none.
+ * @param {string} s
+ * @returns {number}
+ */
 function flowScalarKeySepTop(s) {
   let quote = null;
   let depth = 0;
@@ -3493,8 +3723,12 @@ function flowScalarKeySepTop(s) {
   return -1;
 }
 
-// End offset of a flow sequence item (streaming variant): the first `,`, `]`
-// or `}` at depth 0, honoring quotes, flow brackets and comments.
+/**
+ * End offset of a flow sequence item (streaming variant): the first `,`, `]`
+ * or `}` at depth 0, honoring quotes, flow brackets and comments.
+ * @param {string} s
+ * @returns {number}
+ */
 function scanFlowItemEndTop(s) {
   let quote = null;
   let depth = 0;
@@ -3525,8 +3759,11 @@ function scanFlowItemEndTop(s) {
   return s.length;
 }
 
+// Stream-local tag map seeded with the implicit `!` and `!!` handles; `%TAG`
+// directives extend it per stream.
 const DEFAULT_TAG_MAP = { '!': '!', '!!': 'tag:yaml.org,2002:' };
 
+// Resolve a raw tag token against the current tag map (streaming variant).
 function expandTagTop(rawTag, tagMap) {
   for (const handle of Object.keys(tagMap)) {
     if (rawTag.startsWith(handle)) {
@@ -3537,6 +3774,16 @@ function expandTagTop(rawTag, tagMap) {
   return rawTag;
 }
 
+/**
+ * Streaming variant of parseScalar: resolve a scalar token into its typed JS
+ * value, handling explicit tags, quoted strings and implicit schema
+ * resolution (timestamps stay strings). Does not fold multi-line content —
+ * the StreamParser folds lines before calling this.
+ * @param {string} s
+ * @param {Schema} schema
+ * @param {object} tagMap
+ * @returns {*}
+ */
 function resolveScalarTop(s, schema, tagMap) {
   const trimmed = s.replace(/[ \t]#[^\n]*$/, '').trim();
   const tagMatch = trimmed.match(/^(![^\s]+)/);
@@ -3567,7 +3814,26 @@ function resolveScalarTop(s, schema, tagMap) {
   return val;
 }
 
+/**
+ * SAX-style streaming YAML parser. Unlike the batch parser it does not hold
+ * the whole document: `write(chunk)` feeds line-delimited chunks and emits
+ * events as nodes are recognized, so security limits are enforced before the
+ * full input is consumed. In `buffered` mode (default) it also reassembles
+ * each finished document and fires a `document` event.
+ *
+ * Event types (see STREAM_EVENT_TYPES): `documentStart`, `mappingStart`,
+ * `sequenceStart`, `key`, `scalar`, `mappingEnd`, `sequenceEnd`,
+ * `documentEnd`, plus `error`, `end`, and (with a validator) `violation`.
+ * All events are `{ type, ... }` objects; `*` subscribes to everything.
+ *
+ * Security limits: same counters as the batch parser (maxNodes, maxAlias,
+ * maxAliasDepth, maxExpansion, maxInputBytes, maxStringLength, maxKeys,
+ * maxDepth). `anchors: 'disable'` rejects anchors/aliases outright.
+ */
 class StreamParser {
+  /**
+   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', schema?: Schema, validate?: any, abortOnError?: boolean}} [opts]
+   */
   constructor(opts = {}) {
     const limitKeys = ['maxNodes', 'maxAlias', 'maxAliasDepth', 'maxExpansion', 'maxInputMB', 'maxInputBytes', 'maxStringLength', 'maxKeys', 'maxDepth'];
     const cfg = getBaseConfig();
@@ -3612,12 +3878,14 @@ class StreamParser {
 
   // ── Public API ──────────────────────────────────────────
 
+  // Subscribe a callback to `type` (or `'*'` for all events). Chainable.
   on(type, cb) {
     if (typeof cb !== 'function') return this;
     (this.handlers[type] = this.handlers[type] || []).push(cb);
     return this;
   }
 
+  // Remove a previously-registered callback. Chainable.
   off(type, cb) {
     const hs = this.handlers[type];
     if (hs) {
@@ -3627,6 +3895,13 @@ class StreamParser {
     return this;
   }
 
+  /**
+   * Feed a chunk of YAML text into the parser. Chunks are buffered until a
+   * complete line is available, then dispatched to the line-fed state
+   * machine. Input size is charged against maxInputBytes.
+   * @param {string} chunk
+   * @returns {StreamParser} this (chainable). Throws on invalid YAML.
+   */
   write(chunk) {
     if (this.ended && this.error) throw this.error;
     if (this.ended) throw new YAMLException('stream already ended');
@@ -3648,6 +3923,12 @@ class StreamParser {
     return this;
   }
 
+  /**
+   * Signal end-of-input: flushes any pending block/flow/scalar state, closes
+   * the current document (emitting `documentEnd`), emits an empty document if
+   * none started, then emits `end`. Idempotent.
+   * @returns {StreamParser} this
+   */
   end() {
     if (this.ended) return this;
     try {
@@ -3668,11 +3949,15 @@ class StreamParser {
     return this;
   }
 
+  // Fail the stream with `err` (an Error or a message), routing it through
+  // the error handling path. Throws so the caller can also catch it.
   abort(err) {
     if (this.ended) return;
     throw this._handleError(err instanceof Error ? err : new YAMLException(String(err)));
   }
 
+  // Consume the parser as an async iterable of events (`for await (const ev
+  // of parser)`). Yields every emitted event; throws on `error`.
   async *[Symbol.asyncIterator]() {
     const q = [];
     let waker = null;
@@ -3708,6 +3993,13 @@ class StreamParser {
 
   // ── Event plumbing ──────────────────────────────────────
 
+  /**
+   * Emit an event `{ type, ...payload }` to all subscribers (typed + `*`).
+   * On `documentEnd` in buffered mode, also fires `document` with the fully
+   * assembled document value.
+   * @param {string} type
+   * @param {object} [payload]
+   */
   _emit(type, payload) {
     const ev = payload === undefined ? { type } : { type, ...payload };
     if (type === 'documentStart') this.root = undefined;
@@ -3756,6 +4048,8 @@ class StreamParser {
       throw this._err('schema validation failed at ' + vi.path + ': ' + vi.message);
   }
 
+  // Handle an error: record it, emit `error`, mark the stream ended and emit
+  // `end`. Returns the error so callers can rethrow. First error wins.
   _handleError(e) {
     if (this.error) return e;
     this.error = e;
@@ -3766,10 +4060,12 @@ class StreamParser {
     return e;
   }
 
+  // Build a YAMLException tagged with the current stream line number.
   _err(msg) {
     return new YAMLException('YAML at line ' + this.lineNo + ': ' + msg);
   }
 
+  // Space-count indentation of a line; leading tabs are rejected (strict).
   _indentOf(line) {
     let i = 0;
     while (i < line.length && line[i] === ' ') i++;
@@ -3778,6 +4074,7 @@ class StreamParser {
     return i;
   }
 
+  // Charge one produced node against maxNodes / maxExpansion.
   _count() {
     this.produced++;
     if (this.cfg.maxNodes > 0 && this.produced > this.cfg.maxNodes)
@@ -3786,6 +4083,7 @@ class StreamParser {
       throw this._err('expansion limit exceeded (possible bomb) — reached ' + this.produced);
   }
 
+  // Enforce maxStringLength on a produced string value.
   _checkString(v) {
     if (this.cfg.maxStringLength > 0 && typeof v === 'string' && v.length > this.cfg.maxStringLength)
       throw this._err('string length exceeds limit (' + this.cfg.maxStringLength + ')');
@@ -3793,6 +4091,13 @@ class StreamParser {
 
   // ── Line feeding ────────────────────────────────────────
 
+  /**
+   * Feed one complete line (no trailing `\n`) into the state machine: first
+   * routes into active block-scalar / flow / root-scalar modes, then handles
+   * document markers (`---` / `...`), directives, and delegates real content
+   * to _handleContentLine.
+   * @param {string} line
+   */
   _feedLine(line) {
     this.lineNo++;
     if (line.endsWith('\r')) line = line.slice(0, -1);
@@ -3900,6 +4205,12 @@ class StreamParser {
     this._handleContentLine(line);
   }
 
+  /**
+   * Route a content line (non-blank, non-comment, after document/marker
+   * handling) to the right parser: flow root, explicit-key value, pending
+   * scalar continuation, sequence dash, mapping key, or a bare scalar.
+   * @param {string} line
+   */
   _handleContentLine(line) {
     const indent = this._indentOf(line);
     const trimmed = line.trim();
@@ -4011,6 +4322,14 @@ class StreamParser {
 
   // ── Block parsing ───────────────────────────────────────
 
+  /**
+   * Split a line into a mapping key descriptor. Handles explicit keys
+   * (`? key`), quoted keys (incl. compact `"a":b`), and plain keys via
+   * findKeySepTop. Returns null when the line has no key separator.
+   * @param {string} line
+   * @param {number} indent
+   * @returns {{key: string, valStr: string, explicit: boolean, rawKey: string, colonIdx: number}|null}
+   */
   _parseMapKey(line, indent) {
     const afterIndent = line.slice(indent);
     if (afterIndent === '?' || afterIndent.startsWith('? ')) {
@@ -4062,6 +4381,8 @@ class StreamParser {
     return { key, valStr, explicit: false, rawKey, colonIdx };
   }
 
+  // Emit a `key` event for a mapping entry, register the key (dup / maxKeys
+  // checks), and start parsing its value (explicit keys await the `:` line).
   _handleMapKey(line, indent, top, kp) {
     let mctx;
     if (top && top.kind === 'map') {
@@ -4099,6 +4420,8 @@ class StreamParser {
     this._emitMapKey(mctx, kp);
   }
 
+  // Emit the `key` event, check string limits, register the key and dispatch
+  // to the value parser (or set pendingExplicitKey for `? key`).
   _emitMapKey(mctx, kp) {
     this._emit('key', { value: kp.key, raw: kp.rawKey !== undefined ? kp.rawKey : kp.key });
     this._count();
@@ -4112,6 +4435,8 @@ class StreamParser {
     }
   }
 
+  // Register a key in a mapping context: enforces maxKeys, detects duplicate
+  // keys, and records the override set when a `<<` merge key is seen.
   _addMapKey(ctx, key) {
     if (this.cfg.maxKeys > 0 && ctx.keys.size >= this.cfg.maxKeys)
       throw this._err('mapping keys limit exceeded (' + this.cfg.maxKeys + ')');
@@ -4123,6 +4448,14 @@ class StreamParser {
     ctx.keys.add(key);
   }
 
+  /**
+   * Handle a sequence dash (`- ...`) line: open/reuse a sequence context and
+   * dispatch the item content (empty, nested dash, flow collection, anchor /
+   * alias, mapping item, or a scalar that may span lines).
+   * @param {number} indent
+   * @param {string} trimmed
+   * @param {object|null} top
+   */
   _handleSeqItem(indent, trimmed, top) {
     let seqCtx;
     if (top && top.kind === 'map' && top.expectValue && indent > top.indent) {
@@ -4204,6 +4537,8 @@ class StreamParser {
     this.pendingScalar = { seqCtx, seqIndent: indent, value: v, raw: item, anchor: null, colonIdx: -1, lines: null, quote: null, parts: null };
   }
 
+  // A dash item that is a compact mapping (`- a: b`) opens a map context and
+  // parses the inline key/value pair.
   _openSeqItemMapping(seqCtx, indent, item, ci) {
     this._emit('mappingStart');
     this._count();
@@ -4224,6 +4559,8 @@ class StreamParser {
     }
   }
 
+  // A non-key, non-dash content line: root scalar / block-value plain scalar
+  // / sequence item scalar, with flow-collection fast paths.
   _handleBareScalar(line, indent, trimmed, top) {
     if (top === null && this.stack.length === 0) {
       if (this.rootMode === undefined) {
@@ -4273,6 +4610,9 @@ class StreamParser {
 
   // ── Contexts / stack ────────────────────────────────────
 
+  // Open a mapping context at `indent` (maxDepth-guarded). Each context
+  // carries its key registry, pending key/value state, and (in buffered mode)
+  // the partially-assembled node.
   _openMap(indent) {
     if (this.cfg.maxDepth > 0 && this.stack.length > this.cfg.maxDepth)
       throw this._err('nesting depth exceeds limit (' + this.cfg.maxDepth + ')');
@@ -4285,6 +4625,8 @@ class StreamParser {
     return ctx;
   }
 
+  // Open a sequence context at `indent` (maxDepth-guarded), tracking pending
+  // items and inline-index bookkeeping for retraction.
   _openSeq(indent) {
     if (this.cfg.maxDepth > 0 && this.stack.length > this.cfg.maxDepth)
       throw this._err('nesting depth exceeds limit (' + this.cfg.maxDepth + ')');
@@ -4297,6 +4639,9 @@ class StreamParser {
     return ctx;
   }
 
+  // Close the top stack context: finalize any pending plain value / key /
+  // merge handling, emit the matching End event, register its anchor and
+  // attach the assembled node to its parent.
   _closeTop() {
     const ctx = this.stack.pop();
     if (ctx.kind === 'map') {
@@ -4325,6 +4670,8 @@ class StreamParser {
     }
   }
 
+  // Close everything: pending explicit key, pending scalar, then every stack
+  // context bottom-up. Used at end of document.
   _closeAll() {
     if (this.pendingExplicitKey) {
       const pk = this.pendingExplicitKey;
@@ -4335,6 +4682,8 @@ class StreamParser {
     while (this.stack.length) this._closeTop();
   }
 
+  // Finish the current document: fold a pending root scalar or flush an
+  // unterminated flow root, close all contexts, emit `documentEnd`.
   _closeDocument() {
     if (!this.docStarted || this.docClosed) return;
     if (this.pendingBlock) this._finishBlock();
@@ -4371,6 +4720,8 @@ class StreamParser {
     this.docClosed = true;
   }
 
+  // Fold a block-level plain-scalar value from its collected lines, resolve it
+  // and emit it as a scalar.
   _finishPlainValue(ctx) {
     if (!ctx.plainValueLines) return;
     const lines = ctx.plainValueLines;
@@ -4381,6 +4732,8 @@ class StreamParser {
     this._emitScalar(ctx, v, text);
   }
 
+  // Assign a produced value into a context's node (buffered mode): map keys go
+  // through safeAssign (prototype-pollution guard), seq items are pushed.
   _assignValue(ctx, value) {
     if (ctx.kind === 'map') {
       if (ctx.pendingKey !== null) {
@@ -4400,6 +4753,8 @@ class StreamParser {
     }
   }
 
+  // Undo a just-emitted inline seq scalar so a following indented block node
+  // can replace it (e.g. `- a\n  b: c`). Counts as a retraction.
   _retractSeqInline(seqCtx) {
     if (!seqCtx || seqCtx.kind !== 'seq' || !this.buffered || seqCtx.lastInlineIndex < 0) return;
     seqCtx.node.pop();
@@ -4408,6 +4763,8 @@ class StreamParser {
     this.retractions++;
   }
 
+  // Attach a just-closed context's node to its parent (buffered mode): as a
+  // map value, a seq item, or the document root.
   _attachToParent(ctx) {
     if (!this.buffered) return;
     const top = this.stack[this.stack.length - 1];
@@ -4431,6 +4788,8 @@ class StreamParser {
     }
   }
 
+  // Apply `<<` merge-key semantics to a finalized mapping (buffered mode):
+  // merge sources first, then explicit keys win; override checks apply.
   _finalizeMap(ctx) {
     if (!this.buffered) return;
     const v = ctx.node;
@@ -4457,6 +4816,14 @@ class StreamParser {
 
   // ── Values: block scalar, flow, anchors, aliases ─────────
 
+  /**
+   * Parse a mapping/sequence value string: strips a leading anchor, handles
+   * aliases, empty values (→ null + expectValue), block scalars (|, >), flow
+   * collections, quoted scalars (possibly spanning lines), and plain scalars.
+   * @param {object} ctx
+   * @param {string} valStr
+   * @param {boolean} [explicitValue] True for explicit-key values.
+   */
   _handleValue(ctx, valStr, explicitValue) {
     let anchor = null;
     let rest = valStr.trim();
@@ -4518,6 +4885,8 @@ class StreamParser {
     this._emitScalar(ctx, v, valStr, anchor);
   }
 
+  // Register a pending value anchor (set on the `key:` line) once its value
+  // has been produced.
   _registerValueAnchor(ctx, value) {
     if (ctx.valueAnchor) {
       this._registerAnchor(ctx.valueAnchor, value);
@@ -4525,6 +4894,8 @@ class StreamParser {
     }
   }
 
+  // Emit a scalar event, register its anchor, count/check it, and assign it
+  // into the context's node.
   _emitScalar(ctx, value, raw, anchor, srcAnchor) {
     if (anchor) this._registerAnchor(anchor, value, srcAnchor);
     this._count();
@@ -4533,6 +4904,8 @@ class StreamParser {
     this._assignValue(ctx, value);
   }
 
+  // Register an anchor: circular-alias and maxAliasDepth checks (mirroring
+  // the batch parser's setAnchor), then store name → value.
   _registerAnchor(name, value, sourceAnchor) {
     if (this.anchorMode === 'disable') throw this._err('anchors are disabled in streaming mode');
     let depth = 0;
@@ -4553,6 +4926,8 @@ class StreamParser {
     if (sourceAnchor) this.anchorSources.set(name, sourceAnchor);
   }
 
+  // Resolve an alias, charging one hit against maxAlias. Unknown aliases stay
+  // literal (mirrors the batch parser).
   _resolveAlias(name) {
     if (this.anchorMode === 'disable') throw this._err('aliases are disabled in streaming mode');
     if (++this.aliasHits > this.cfg.maxAlias)
@@ -4562,6 +4937,8 @@ class StreamParser {
     return v;
   }
 
+  // Collect one line into the active block scalar (pendingBlock). A line at or
+  // above the key indent terminates the block.
   _feedBlockLine(line) {
     const pb = this.pendingBlock;
     const indent = this._indentOf(line);
@@ -4576,6 +4953,8 @@ class StreamParser {
     pb.lines.push(line.slice(pb.contentIndent));
   }
 
+  // Finalize a block scalar: apply chomping (clip/strip/keep) and folding for
+  // `>`, then emit it as a scalar and register its anchor.
   _finishBlock() {
     const pb = this.pendingBlock;
     this.pendingBlock = null;
@@ -4612,6 +4991,8 @@ class StreamParser {
 
   // ── Flow parsing ────────────────────────────────────────
 
+  // True when quotes are matched and brackets balanced across `str` (used to
+  // detect complete flow collections that may span several lines).
   _flowBalanced(str) {
     let depth = 0;
     let inS = false, inD = false, esc = false;
@@ -4640,6 +5021,9 @@ class StreamParser {
     return depth === 0 && !inS && !inD;
   }
 
+  // Return the text after the matching closing bracket of the first flow
+  // collection in `str`, or null if not closed (used to validate trailing
+  // content after a closed flow value).
   _closedFlowTrail(str) {
     let depth = 0;
     let inS = false, inD = false, esc = false;
@@ -4667,6 +5051,8 @@ class StreamParser {
     return null;
   }
 
+  // Parse and emit a complete flow collection as a value in `ctx`, registering
+  // its anchor and assigning it into the context's node.
   _emitFlow(ctx, str, anchor) {
     const r = this._parseFlowEmitting(str, 0);
     if (anchor) this._registerAnchor(anchor, r.value);
@@ -4675,11 +5061,13 @@ class StreamParser {
     return r.value;
   }
 
+  // Parse and emit a flow collection at the document root, storing the result.
   _emitFlowRoot(str) {
     const r = this._parseFlowEmitting(str, 0);
     this.root = r.value;
   }
 
+  // Count/check and emit a flow scalar value, returning it.
   _flowScalar(val, raw) {
     this._count();
     this._checkString(val);
@@ -4687,6 +5075,14 @@ class StreamParser {
     return val;
   }
 
+  /**
+   * Streaming counterpart of the batch parseInlineFlow: parse one flow node
+   * (`[...]`, `{...}`, anchor/alias/tag/scalar), emitting SAX events as it
+   * goes. Returns `{ value, endPos }`. Depth bounded at 100.
+   * @param {string} s
+   * @param {number} [_depth]
+   * @returns {{value: *, endPos: number}}
+   */
   _parseFlowEmitting(s, _depth) {
     if (_depth === undefined) _depth = 0;
     if (_depth > 100) throw this._err('flow nesting too deep (>100)');
@@ -4910,6 +5306,8 @@ class StreamParser {
     return { value: this._flowScalar(v, raw), endPos: end };
   }
 
+  // True when a deeper line is a valid plain-scalar continuation (not blank,
+  // not a comment, no `: ` key separator) — js-yaml folding semantics.
   _isPlainContinuation(line, indent) {
     const c = line.slice(indent);
     // js-yaml folds any deeper line into an inline plain scalar unless it is
@@ -4920,6 +5318,8 @@ class StreamParser {
     return true;
   }
 
+  // Scan for the closing `"` of a double-quoted scalar from offset `from`
+  // (skipping `\`-escapes). Returns the index, or -1 if unclosed.
   _scanDoubleQuoteEnd(s, from = 0) {
     let i = from;
     while (i < s.length) {
@@ -4930,6 +5330,8 @@ class StreamParser {
     return -1;
   }
 
+  // Scan for the closing `'` of a single-quoted scalar from offset `from`
+  // (skipping `''` doubled quotes). Returns the index, or -1 if unclosed.
   _scanSingleQuoteEnd(s, from = 0) {
     let i = from;
     while (i < s.length) {
@@ -4942,6 +5344,7 @@ class StreamParser {
     return -1;
   }
 
+  // Fold a multi-line quoted root scalar into its unescaped value.
   _foldQuotedRoot(lines) {
     const quote = lines[0].trim()[0];
     let text = lines[0].trim().slice(1);
@@ -4954,6 +5357,8 @@ class StreamParser {
     return quote === '"' ? unescapeYaml(text) : text.replace(/''/g, "'");
   }
 
+  // Emit a pending scalar (accumulated continuation lines / quoted parts) and
+  // clear the pending state.
   _finalizePendingScalar() {
     const pend = this.pendingScalar;
     this.pendingScalar = null;
@@ -4973,6 +5378,8 @@ class StreamParser {
     this._emitScalar(pend.seqCtx, pend.value, pend.raw, pend.anchor);
   }
 
+  // Fold root-level plain-scalar lines (blank lines kept as newlines, others
+  // joined with spaces).
   _foldRootScalarLines(lines) {
     const out = [];
     let buf = null;
@@ -4990,6 +5397,8 @@ class StreamParser {
     return out.join('\n');
   }
 
+  // Fold block-level plain-scalar lines (indented lines join with spaces,
+  // blank lines separate with newlines).
   _foldScalarLines(lines) {
     const folded = [];
     let i = 0;

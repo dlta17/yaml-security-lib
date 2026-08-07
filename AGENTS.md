@@ -1,6 +1,8 @@
 # Agent conventions — YAML Security Lib
 
 Guidelines for AI agents and humans working on this repo. Read this before editing.
+For a full walkthrough of the parser internals and the security model, see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Overview
 

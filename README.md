@@ -18,6 +18,10 @@
 
 Zero dependencies. Works in Node.js ≥16 and all modern browsers.
 
+> **For contributors / maintainers:** see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a
+> deep dive into the two parsing engines (batch + streaming), the security model, and a
+> code map of the single-file core (`src/index.js`).
+
 ## Install
 
 ```bash
