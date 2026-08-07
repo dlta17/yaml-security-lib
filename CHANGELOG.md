@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.5 (2026-08-08)
+
+### Fix: `maxDepth` counting parity between batch and stream (sequence items)
+
+- **Batch no longer resets the depth counter at sequence items.** The batch parser previously re-entered `yamlToJS` for every sequence item with a fresh counter, so `a:\n  - b:\n      c: 1` counted as depth 2 and slipped past `maxDepth: 2`, while the stream parser (depth = `this.stack.length`, never reset) blocked it. `yamlToJS` gained a trailing `blockDepth` parameter that sequence items, block values and anchor pre-scans forward as `blockDepth + 1` (explicit keys forward `blockDepth` unchanged). Both engines now enforce the same limit on the same documents.
+- **Counting model (documented in README "How `maxDepth` is counted")**: root block collection = depth 0; every nested block mapping/sequence = `+1`; flow `[...]`/`{...}` don't count; `maxDepth: 0` disables. Strict `>`: `maxDepth: 3` allows `a.b.c.d` (depth 3), blocks `a.b.c.d.e` (depth 4).
+- Docs: README `maxDepth` row + worked examples (pure maps, sequence items, streaming note), `docs/ARCHITECTURE.md` §4.5 with the `yamlToJS` depth-threading rationale.
+- Tests: `test/index.js` +9, `test/stream.js` +3. Full suite green: 243 + 262 + 147 + 1645 + 406 (YAML Test Suite) + 262 + 95 + 60.
+
 ## 1.12.4 (2026-08-08)
 
 ### Fixes: unified limit handling + streaming alias-bomb protection

@@ -165,7 +165,7 @@ Every check is enforced identically in both engines.
 | `maxInputMB` / `maxInputBytes` | 1 MB | entry of `yamlToJS` / `parseAllYaml` / `write()` |
 | `maxStringLength` | 0 (unlimited) | `track()` / `_checkString()` |
 | `maxKeys` | 0 (unlimited) | `addKey()` / `_addMapKey()` / flow parsers |
-| `maxDepth` | 50 | `parseBlock` recursion guard |
+| `maxDepth` | 50 | `parseBlock` depth guard (block collections only) |
 
 ### 4.1 Prototype pollution
 
@@ -196,6 +196,29 @@ PyYAML-style — js-yaml rejects it. Because the shape builds a real mapping
 entry, the duplicate/prototype checks above fire on its keys automatically.
 `compactQuotedKeySep` detects the shape at root, block-value and sequence-item
 positions in both engines.
+
+### 4.5 `maxDepth` counting model
+
+`blockDepth` starts at `0` at the document root and increases by `1` for every
+nested **block** collection opened by `parseBlock` (block mappings and block
+sequences). Flow collections are parsed by `parseInlineFlow` and are **not**
+counted. `maxDepth: 0` disables the guard; otherwise a block is rejected when
+`blockDepth > maxDepth` (strict `>` — depth equal to the limit is allowed).
+
+Two details keep the counter exact:
+
+- **Recursive `parseBlock` values** carry `blockDepth + 1` (the main mapping /
+  sequence value path), so a pure chain `a → b → c → d` reaches depth `3` and
+  is allowed by `maxDepth: 3`, while `a → … → e` (depth `4`) is rejected.
+- **Sequence items and block values that re-enter `yamlToJS`** must forward the
+  depth explicitly: `yamlToJS(..., blockDepth + 1)` for seq items, block values
+  and anchor pre-scans, and `yamlToJS(..., blockDepth)` for explicit keys. This
+  threading (`yamlToJS` gained a trailing `blockDepth` parameter) is what makes
+  a sequence item's nested map count as `sequence depth + 1` instead of
+  restarting at `0` — the batch parser previously reset the counter at every
+  seq item, letting `map → seq → map` slip under the limit while the stream
+  parser (which derives depth from `this.stack.length`, never reset) blocked
+  it. Both engines now enforce the same count on the same documents.
 
 ---
 

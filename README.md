@@ -60,7 +60,7 @@ parser.parse("&a 1\n&b *a\n&c *b\n&d *c\n&e *d\n&f *e\n&g *f\n&h *g\n&i *h\n&j *
 |--------|---------|-------------|
 | `maxAliasDepth` | `10` | Max anchor indirection depth |
 | `maxAlias` | `100` | Max total alias expansions |
-| `maxDepth` | `50` | Max nesting depth in block mappings |
+| `maxDepth` | `50` | Max nesting depth of block collections (mappings + sequences). Flow `[...]`/`{...}` don't count; `0` disables. See "How `maxDepth` is counted" below |
 | `maxNodes` | `10000` | Max parsed nodes before abort |
 | `maxExpansion` | `100000` | Max expansion factor (Billion Laughs) |
 | `maxStringLength` | `0` (unlimited) | Max string length in parsed output. Set to e.g. `10000` to prevent overly long strings. |
@@ -69,6 +69,33 @@ parser.parse("&a 1\n&b *a\n&c *b\n&d *c\n&e *d\n&f *e\n&g *f\n&h *g\n&i *h\n&j *
 | `maxInputMB` | `1` | Max input size in MiB (maps onto `maxInputBytes`) |
 
 > **Note on limits**: all limits use strict `>` semantics — a value equal to the limit is allowed, anything larger is blocked. E.g. `maxStringLength: 1000000` allows a 1,000,000-char string but blocks 1,000,001+. To block a specific size, set the limit one lower. Constructor options are validated with the same rules as `setLimits` (unknown keys are ignored, invalid values throw).
+
+#### How `maxDepth` is counted
+
+The counter starts at `0` for the document's top-level block collection and increases by `1` for every *nested block collection* (block mapping or block sequence) you open. Flow collections (`[ ... ]`, `{ ... }`) are **not** counted, and `maxDepth: 0` disables the guard. Because the rule is strict `>` (depth equal to the limit is allowed), `maxDepth: 3` accepts `a.b.c.d` — three nested maps reach depth `3` — but rejects `a.b.c.d.e`, whose fourth nested map reaches depth `4 > 3`:
+
+```yaml
+a:         # block mapping, depth 0
+  b:       # block mapping, depth 1
+    c:     # block mapping, depth 2
+      d: 1 # block mapping, depth 3 → allowed with maxDepth: 3
+```
+
+```yaml
+a:            # depth 0
+  b:          # depth 1
+    c:        # depth 2
+      d:      # depth 3
+        e: 1  # depth 4 > 3 → blocked
+```
+
+Sequences count too, and their items do **not** reset the counter — the block inside a sequence item is the sequence's depth `+ 1`:
+
+```yaml
+a:        # depth 0
+  - b:    # sequence depth 1; the item map `b` is depth 2
+      c: 1 # block mapping, depth 3 → blocked with maxDepth: 2
+```
 
 ### `parse(str)` → `{ ok, result } | { ok, error }`
 
@@ -224,7 +251,7 @@ for await (const doc of parseStream(chunks())) { /* ... */ }
 
 ### Security in streaming mode
 
-All limits (`maxNodes`, `maxDepth`, `maxKeys`, `maxExpansion`, `maxStringLength`, `maxAlias`, `maxAliasDepth`, `maxInputBytes`) are enforced **during** parsing. For example, `maxInputBytes` is checked on every `write()`, and `maxNodes`/`maxKeys` on every node/key seen. Alias bombs are bounded by `maxExpansion`/`maxNodes` just like the batch parser: every `*alias` reference charges the full weight of the anchored subtree, so `createStream({ maxExpansion, maxNodes })` stops a bomb even when `maxAlias` is raised.
+All limits (`maxNodes`, `maxDepth`, `maxKeys`, `maxExpansion`, `maxStringLength`, `maxAlias`, `maxAliasDepth`, `maxInputBytes`) are enforced **during** parsing. For example, `maxInputBytes` is checked on every `write()`, and `maxNodes`/`maxKeys` on every node/key seen. `maxDepth` is counted exactly as in the batch parser — see "How `maxDepth` is counted" above; both engines enforce the same limit on the same documents. Alias bombs are bounded by `maxExpansion`/`maxNodes` just like the batch parser: every `*alias` reference charges the full weight of the anchored subtree, so `createStream({ maxExpansion, maxNodes })` stops a bomb even when `maxAlias` is raised.
 
 ### Anchors: `buffered` vs `disable`
 
