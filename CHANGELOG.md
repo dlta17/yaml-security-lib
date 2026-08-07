@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.12.4 (2026-08-08)
+
+### Fixes: unified limit handling + streaming alias-bomb protection
+- **`new YamlSecurity({...})` now applies every limit key exactly like `setLimits`.** Previously the constructor silently dropped `maxAlias`, `maxInputMB` and `maxInputBytes`, and performed no validation. Now all nine limit keys (`maxNodes`, `maxAlias`, `maxAliasDepth`, `maxExpansion`, `maxInputMB`, `maxInputBytes`, `maxStringLength`, `maxKeys`, `maxDepth`) are honored and validated with the same rules as `setLimits` — invalid values throw immediately (`YamlSecurity: maxNodes must be a positive integer`, etc.), and unknown keys are ignored.
+- **`createStream({...})` validates limits the same way** (e.g. `createStream({ maxNodes: -1 })` now throws instead of silently disabling the guard).
+- **Streaming alias bombs are now bounded by `maxExpansion`/`maxNodes`, not just `maxAlias`.** The stream parser previously charged 1 node per alias reference, so a large anchored collection expanded through many `*x` aliases slipped past `maxExpansion` as long as `maxAlias` was raised. Each aliased subtree (and tagged construct) is now charged its full weight against `maxNodes`/`maxExpansion`, mirroring the batch parser's weighted counting — e.g. a 200-node anchor referenced 300 times is rejected at the 25th alias with `expansion limit exceeded (possible bomb)`.
+- Tests: `test/index.js` +10, `test/stream.js` +2. Full suite green: 234 + 262 + 144 + 1645 + 406 (YAML Test Suite) + 262 + 95 + 60.
+
 ## 1.12.3 (2026-08-07)
 
 ### Fixes: compact quoted-key mappings (PyYAML-style) now flow through the security checks

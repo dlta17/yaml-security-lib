@@ -59,14 +59,16 @@ parser.parse("&a 1\n&b *a\n&c *b\n&d *c\n&e *d\n&f *e\n&g *f\n&h *g\n&i *h\n&j *
 | Option | Default | Description |
 |--------|---------|-------------|
 | `maxAliasDepth` | `10` | Max anchor indirection depth |
+| `maxAlias` | `100` | Max total alias expansions |
 | `maxDepth` | `50` | Max nesting depth in block mappings |
 | `maxNodes` | `10000` | Max parsed nodes before abort |
 | `maxExpansion` | `100000` | Max expansion factor (Billion Laughs) |
 | `maxStringLength` | `0` (unlimited) | Max string length in parsed output. Set to e.g. `10000` to prevent overly long strings. |
 | `maxKeys` | `0` (unlimited) | Max keys per mapping (block + inline). Set to e.g. `1000` to prevent mapping bombs. |
 | `maxInputBytes` | `1048576` (1MB) | Max input size in bytes (set via `maxInputMB` too) |
+| `maxInputMB` | `1` | Max input size in MiB (maps onto `maxInputBytes`) |
 
-> **Note on limits**: all limits use strict `>` semantics — a value equal to the limit is allowed, anything larger is blocked. E.g. `maxStringLength: 1000000` allows a 1,000,000-char string but blocks 1,000,001+. To block a specific size, set the limit one lower.
+> **Note on limits**: all limits use strict `>` semantics — a value equal to the limit is allowed, anything larger is blocked. E.g. `maxStringLength: 1000000` allows a 1,000,000-char string but blocks 1,000,001+. To block a specific size, set the limit one lower. Constructor options are validated with the same rules as `setLimits` (unknown keys are ignored, invalid values throw).
 
 ### `parse(str)` → `{ ok, result } | { ok, error }`
 
@@ -222,7 +224,7 @@ for await (const doc of parseStream(chunks())) { /* ... */ }
 
 ### Security in streaming mode
 
-All limits (`maxNodes`, `maxDepth`, `maxKeys`, `maxExpansion`, `maxStringLength`, `maxAlias`, `maxAliasDepth`, `maxInputBytes`) are enforced **during** parsing. For example, `maxInputBytes` is checked on every `write()`, and `maxNodes`/`maxKeys` on every node/key seen.
+All limits (`maxNodes`, `maxDepth`, `maxKeys`, `maxExpansion`, `maxStringLength`, `maxAlias`, `maxAliasDepth`, `maxInputBytes`) are enforced **during** parsing. For example, `maxInputBytes` is checked on every `write()`, and `maxNodes`/`maxKeys` on every node/key seen. Alias bombs are bounded by `maxExpansion`/`maxNodes` just like the batch parser: every `*alias` reference charges the full weight of the anchored subtree, so `createStream({ maxExpansion, maxNodes })` stops a bomb even when `maxAlias` is raised.
 
 ### Anchors: `buffered` vs `disable`
 
