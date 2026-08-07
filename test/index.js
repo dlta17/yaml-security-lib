@@ -77,6 +77,12 @@ assert(!p.parse('key: {,}').ok, 'empty flow map key rejected');
 assert(!p.parse('key: {a: 1, , b: 2}').ok, 'empty flow map entry rejected');
 assertEqual(p.parse('key: {a: 1, b: 2,}').result, { key: { a: 1, b: 2 } }, 'trailing comma in flow map');
 assertEqual(p.parse('key: {}').result, { key: {} }, 'empty flow map');
+assertEqual(p.parse('key: [a: 1, b: 2]').result, { key: [{ a: 1 }, { b: 2 }] }, 'flow seq implicit maps');
+assertEqual(p.parse('key: ["a": 1]').result, { key: [{ a: 1 }] }, 'flow seq quoted key map');
+assertEqual(p.parse('key: [a: [1, 2], b: {c: 3}]').result, { key: [{ a: [1, 2] }, { b: { c: 3 } }] }, 'flow seq nested implicit');
+assertEqual(p.parse('key: [? a, ? b]').result, { key: [{ a: null }, { b: null }] }, 'flow seq explicit keys');
+assertEqual(p.parse('key: {? a : 1, ? b : 2}').result, { key: { a: 1, b: 2 } }, 'flow map explicit keys');
+assertEqual(p.parse('key: {a}').result, { key: { a: null } }, 'flow map key no value');
 
 // ── Duplicate keys ──
 assert(!p.parse('x: 1\nx: 2').ok, 'duplicate key detected');

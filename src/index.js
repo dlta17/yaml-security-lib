@@ -3306,6 +3306,77 @@ function findKeySepTop(str, start) {
   return -1;
 }
 
+// Detect a key-value separator inside a flow sequence item (streaming
+// variant): the first `:` at flow depth 0, honoring quotes, comments and
+// nested flow collections. Returns -1 when the item is a plain scalar.
+function flowKeySepTop(s) {
+  let quote = null;
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (quote === '"') {
+        if (ch === '\\') { i++; continue; }
+        if (ch === '"') quote = null;
+      } else {
+        if (ch === "'" && s[i + 1] === "'") { i++; continue; }
+        if (ch === "'") quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      if (i === 0 || /[\s,:\[\]{]/.test(s[i - 1])) quote = ch;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /[\s\n]/.test(s[i - 1]))) {
+      while (i < s.length && s[i] !== '\n') i++;
+      continue;
+    }
+    if (ch === '[' || ch === '{') { depth++; continue; }
+    if (ch === ']' || ch === '}') { if (depth === 0) return -1; depth--; continue; }
+    if (ch === ',') { if (depth === 0) return -1; continue; }
+    if (ch === ':' && depth === 0) {
+      if (i + 1 >= s.length || s[i + 1] === ' ' || s[i + 1] === '\t' || s[i + 1] === '\n' || s[i + 1] === '\r' || s[i + 1] === '}' || s[i + 1] === ']' || s[i + 1] === ',')
+        return i;
+      if (s[i - 1] === '"' || s[i - 1] === "'" || s[i - 1] === ']' || s[i - 1] === '}')
+        return i;
+    }
+  }
+  return -1;
+}
+
+// End offset of a flow sequence item (streaming variant): the first `,`, `]`
+// or `}` at depth 0, honoring quotes, flow brackets and comments.
+function scanFlowItemEndTop(s) {
+  let quote = null;
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (quote === '"') {
+        if (ch === '\\') { i++; continue; }
+        if (ch === '"') quote = null;
+      } else {
+        if (ch === "'" && s[i + 1] === "'") { i++; continue; }
+        if (ch === "'") quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      if (i === 0 || /[\s,:\[\]{]/.test(s[i - 1])) quote = ch;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /[\s\n]/.test(s[i - 1]))) {
+      while (i < s.length && s[i] !== '\n') i++;
+      continue;
+    }
+    if (ch === '[' || ch === '{') { depth++; continue; }
+    if (ch === ']' || ch === '}') { if (depth === 0) return i; depth--; continue; }
+    if (ch === ',') { if (depth === 0) return i; continue; }
+  }
+  return s.length;
+}
+
 const DEFAULT_TAG_MAP = { '!': '!', '!!': 'tag:yaml.org,2002:' };
 
 function expandTagTop(rawTag, tagMap) {
@@ -4438,7 +4509,31 @@ class StreamParser {
           while (i < s.length && s[i] !== '\n') i++;
           continue;
         }
-        const r = this._parseFlowEmitting(s.slice(i), _depth + 1);
+        const sub = s.slice(i);
+        if (/^\?([ \t]|$)/.test(sub)) {
+          const e = scanFlowItemEndTop(sub);
+          const fr = this._parseFlowEmitting('{' + sub.slice(0, e) + '}', _depth + 1);
+          if (fr.value !== undefined) {
+            items.push(fr.value);
+            i += e;
+            afterComma = false;
+            continue;
+          }
+        }
+        const sep = flowKeySepTop(sub);
+        if (sep >= 0) {
+          if (sub.slice(0, sep).indexOf('\n') >= 0)
+            throw this._err('missed comma between flow collection entries');
+          const e = scanFlowItemEndTop(sub);
+          const fr = this._parseFlowEmitting('{' + sub.slice(0, e) + '}', _depth + 1);
+          if (fr.value && typeof fr.value === 'object') {
+            items.push(fr.value);
+            i += e;
+            afterComma = false;
+            continue;
+          }
+        }
+        const r = this._parseFlowEmitting(sub, _depth + 1);
         items.push(r.value);
         i += r.endPos;
         afterComma = false;
@@ -4487,15 +4582,28 @@ class StreamParser {
           let j = i;
           while (j < s.length && s[j] !== ':' && s[j] !== ',' && s[j] !== '}' && s[j] !== '\n') j++;
           key = s.slice(i, j).trim();
+          if (/^\?[ \t\n\r]*$/.test(key)) key = '';
+          else if (/^\?[ \t\n\r]/.test(key)) key = key.replace(/^\?[ \t\n\r]*/, '');
           i = j;
         }
         if (this.cfg.maxKeys > 0 && seen.size >= this.cfg.maxKeys)
           throw this._err('inline mapping keys limit exceeded (' + this.cfg.maxKeys + ')');
         if (seen.has(key)) throw this._err('Duplicate key: "' + key + '"');
         seen.add(key);
-        while (i < s.length && (s[i] === ' ' || s[i] === '\t' || s[i] === '\n' || s[i] === ':')) i++;
+        while (i < s.length) {
+          const cc = s[i];
+          if (cc === ' ' || cc === '\t' || cc === '\n' || cc === ':') { i++; continue; }
+          if (cc === '#') { while (i < s.length && s[i] !== '\n') i++; continue; }
+          break;
+        }
         this._emit('key', { value: key, raw: key });
         this._count();
+        if (i >= s.length || s[i] === ',' || s[i] === '}') {
+          this._flowScalar(null, '');
+          safeAssign(obj, key, null);
+          needKey = false;
+          continue;
+        }
         const r = this._parseFlowEmitting(s.slice(i), _depth + 1);
         safeAssign(obj, key, r.value);
         i += r.endPos;

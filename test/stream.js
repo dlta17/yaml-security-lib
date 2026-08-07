@@ -96,6 +96,12 @@ const cases = {
   'own line flow then key': 'key:\n  [\n    1,\n    2\n  ]\nnext: 2\n',
   'inline flow trail comment': 'key: [\n  1, 2\n  ] # trail\n',
   'nested own line flow': 'a:\n  b:\n    [1, 2]\n  c: 3\n',
+  'flow seq implicit maps': 'key: [a: 1, b: 2]\n',
+  'flow seq quoted key map': 'key: ["a": 1]\n',
+  'flow seq nested implicit': 'key: [a: [1, 2], b: {c: 3}]\n',
+  'flow seq explicit keys': 'key: [? a, ? b]\n',
+  'flow map explicit keys': 'key: {? a : 1, ? b : 2}\n',
+  'flow map key no value': 'key: {a}\n',
 };
 
 const overrides = {
