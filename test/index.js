@@ -149,6 +149,31 @@ assert(!p.parse('{a: 1, a: 2}').ok, 'inline duplicate key');
 assert(!p.parse('__proto__: polluted').ok, 'proto pollution blocked');
 assert(!p.parse('constructor:\n  prototype:\n    x: 1').ok, 'constructor.prototype blocked');
 
+// ── Compact quoted-key mappings (attached value, PyYAML-style) ──
+assertEqual(p.parse('"a":b').result, { a: 'b' }, 'compact double-quoted key/value');
+assertEqual(p.parse("'a':b").result, { a: 'b' }, 'compact single-quoted key/value');
+assertEqual(p.parse('"a" :b').result, { a: 'b' }, 'compact key with space before colon');
+assertEqual(p.parse('"a":b c').result, { a: 'b c' }, 'compact key attached multi-word value');
+assertEqual(p.parse('"a": {b: 1}').result, { a: { b: 1 } }, 'compact key flow value');
+assertEqual(p.parse('"a": "b:c"').result, { a: 'b:c' }, 'compact key quoted value');
+assertEqual(p.parse('"a":').result, { a: null }, 'compact key empty value stays null');
+assertEqual(p.parse('"a":b\nc: d').result, { a: 'b', c: 'd' }, 'compact key with sibling');
+assertEqual(p.parse('"a":b\n"b":c').result, { a: 'b', b: 'c' }, 'two compact keys');
+assertEqual(p.parse('x:\n  "a":b').result, { x: { a: 'b' } }, 'nested compact key');
+assertEqual(p.parse('"a":b\n  c').result, { a: 'b c' }, 'compact key value folds continuation');
+assertEqual(p.parse('- "a":b').result, [{ a: 'b' }], 'compact key as seq item');
+assertEqual(p.parse('- "a":b\n- "a":c').result, [{ a: 'b' }, { a: 'c' }], 'compact keys in separate seq items');
+assertEqual(p.parse('- "a":b\n  c: d').result, [{ a: 'b', c: 'd' }], 'compact key seq item with sibling');
+assertEqual(p.parse('a:\n  - "b":c').result, { a: [{ b: 'c' }] }, 'compact key nested seq item');
+assertEqual(p.parse('"a"').result, 'a', 'bare quoted scalar unchanged');
+assertEqual(p.parse('key: a\n  "b":c').result, { key: 'a "b":c' }, 'compact quoted token in continuation still folds');
+assert(!p.parse('"__proto__":x').ok, 'compact proto key blocked');
+assert(!p.parse('"constructor":x').ok, 'compact constructor key blocked');
+assert(!p.parse('- "__proto__":x').ok, 'compact proto key in seq blocked');
+assert(!p.parse('"a":b\n"a":c').ok, 'compact duplicate keys blocked');
+assert(!p.parse('x:\n  "a":b\n  "a":c').ok, 'compact nested duplicate keys blocked');
+assert(!p.parse('"__proto__":x\n"__proto__":y').ok, 'compact proto duplicates blocked');
+
 // ── Alias depth ──
 const chain = '&a hello\n&b *a\n&c *b\n&d *c\n&e *d\n&f *e\n&g *f\n&h *g\n&i *h\n&j *i\n&k *j\nkey: *k';
 assert(p.parse(chain).ok, 'alias chain depth=10 ok');

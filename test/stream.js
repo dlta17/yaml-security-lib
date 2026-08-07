@@ -182,6 +182,24 @@ checkAll('root scalar column-0 doc-end', 'a\n...\n');
 checkAll('root scalar col-0 doc-start multi-doc', 'a\n---\n');
 checkAll('seq dash continuation folds', '- a\n  - b\n');
 checkAll('root scalar multi-doc after end', 'a\n...\nb: 1\n');
+checkAll('compact quoted key', '"a":b\n');
+checkAll('compact single-quoted key', "'a':b\n");
+checkAll('compact key space before colon', '"a" :b\n');
+checkAll('compact key with sibling', '"a":b\nc: d\n');
+checkAll('compact key two keys', '"a":b\n"b":c\n');
+checkAll('compact key nested', 'x:\n  "a":b\n');
+checkAll('compact key seq item', '- "a":b\n');
+checkAll('compact keys separate seq items', '- "a":b\n- "a":c\n');
+checkAll('compact key seq item sibling', '- "a":b\n  c: d\n');
+checkAll('compact key flow value', '"a": {b: 1}\n');
+checkAll('compact key quoted value', '"a": "b:c"\n');
+checkAll('compact key empty value', '"a":\n');
+checkAll('compact key value folds', '"a":b\n  c\n');
+checkThrows('compact proto key blocked', '"__proto__":x\n');
+checkThrows('compact proto seq key blocked', '- "__proto__":x\n');
+checkThrows('compact duplicate keys blocked', '"a":b\n"a":c\n');
+checkThrows('compact nested duplicate keys blocked', 'x:\n  "a":b\n  "a":c\n');
+checkThrows('compact proto duplicates blocked', '"__proto__":x\n"__proto__":y\n');
 
 function checkAll(name, yaml) {
   const expected = parseAll(yaml);

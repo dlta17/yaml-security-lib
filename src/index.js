@@ -1837,7 +1837,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
             throw err('bad indentation of a sequence entry');
         }
         const colonIdxItem = findKeySep(dashContent);
-        const isMappingItem = colonIdxItem >= 0 && ((dashContent[colonIdxItem + 1] === ' ' || dashContent[colonIdxItem + 1] === '\t' || colonIdxItem === dashContent.length - 1) || itemLines.length > 0);
+        const compactKeyIdx = colonIdxItem < 0 ? compactQuotedKeySep(dashContent) : -1;
+        const isMappingItem = (colonIdxItem >= 0 && ((dashContent[colonIdxItem + 1] === ' ' || dashContent[colonIdxItem + 1] === '\t' || colonIdxItem === dashContent.length - 1) || itemLines.length > 0)) || compactKeyIdx >= 0;
         let itemDedent;
         if (isMappingItem || dashContent.trimStart().startsWith('-')) {
           // Keys of a mapping item (or a nested sequence) sit at indent+2;
@@ -2289,7 +2290,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
               if (rel === '') continue;
             }
             rel = rel.replace(/^![^\s]+[ \t]*/, '');
-            if (findKeySep(rel) >= 0 || rel === '-' || rel.startsWith('- ') || /^(\||>)[0-9+\-]*$/.test(rel) || rel.startsWith('? ') || rel.startsWith('&')) { isScalarBlock = false; break; }
+            if (findKeySep(rel) >= 0 || compactQuotedKeySep(rel) >= 0 || rel === '-' || rel.startsWith('- ') || /^(\||>)[0-9+\-]*$/.test(rel) || rel.startsWith('? ') || rel.startsWith('&')) { isScalarBlock = false; break; }
           }
           if (isFlowBlock) {
             const rawParts = blockContentLines;
@@ -2631,7 +2632,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
       content = content.replace(/[ \t]#[^\n]*$/, '');
     }
     content = content.trim();
-    if (findKeySep(content) >= 0 || /^[-?]([ \t]|$)/.test(content.trim()) || /^-[ \t]/m.test(content)) {
+    if (findKeySep(content) >= 0 || compactQuotedKeySep(content) >= 0 || /^[-?]([ \t]|$)/.test(content.trim()) || /^-[ \t]/m.test(content)) {
       // A tagged block collection: parse it as a block node carrying the tag.
       result = track(parseBlock(0, 0, content.split('\n'), undefined, undefined, undefined, null, fullTag));
     } else {
@@ -2678,7 +2679,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
         result = taggedVal;
       }
     }
-  } else if (findKeySep(topContent) < 0 && contentLines[0].trim() !== '-' && !topContent.startsWith('- ') && !topContent.startsWith('-\t') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
+  } else if (findKeySep(topContent) < 0 && compactQuotedKeySep(contentLines[0].trim()) < 0 && contentLines[0].trim() !== '-' && !topContent.startsWith('- ') && !topContent.startsWith('-\t') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
     // A document-end marker at column 0 ends the (root scalar) document; a
     // deeper-indented one folds into the plain scalar (js-yaml parity).
     let scalarLines = contentLines;
@@ -3364,6 +3365,40 @@ function findKeySepTop(str, start) {
   return -1;
 }
 
+// Detect a compact quoted-key mapping entry at block level: a quoted token at
+// the key position whose closing quote is followed (after optional spaces) by
+// a `:` with the value attached (no whitespace after the colon), e.g. `"a":b`
+// or `'a':b`. js-yaml rejects these ("a whitespace character is expected after
+// the key-value separator within a block mapping"); we accept them PyYAML-style
+// so the resulting keys flow through the duplicate/prototype-pollution checks.
+// Returns the colon index, or -1.
+function compactQuotedKeySep(str, start) {
+  start = start || 0;
+  const q = str[start];
+  if (q !== '"' && q !== "'") return -1;
+  let pos = start + 1;
+  while (pos < str.length) {
+    const ch = str[pos];
+    if (q === '"') {
+      if (ch === '\\') { pos += 2; continue; }
+      if (ch === '"') break;
+    } else {
+      if (ch === "'" && pos + 1 < str.length && str[pos + 1] === "'") { pos += 2; continue; }
+      if (ch === "'") break;
+    }
+    pos++;
+  }
+  if (pos >= str.length) return -1;
+  pos++;
+  while (pos < str.length && (str[pos] === ' ' || str[pos] === '\t')) pos++;
+  if (pos >= str.length) return -1;
+  if (str[pos] !== ':') return -1;
+  if (pos + 1 >= str.length) return -1;
+  const after = str[pos + 1];
+  if (after === ' ' || after === '\t' || after === '\n' || after === '\r' || after === '}' || after === ']') return -1;
+  return pos;
+}
+
 // First `:` that starts a mapping key inside a block-context plain scalar
 // (js-yaml semantics). Quotes and flow indicators are literal characters in a
 // plain scalar, so any `:` followed by whitespace or EOL — before any comment
@@ -3994,6 +4029,10 @@ class StreamParser {
       if (close > 0) {
         const ci = findKeySepTop(afterIndent, close);
         if (ci >= 0) { colonIdx = indent + ci; key = unescapeYaml(afterIndent.slice(1, close)); }
+        else {
+          const cq = compactQuotedKeySep(afterIndent, 0);
+          if (cq >= 0) { colonIdx = indent + cq; key = unescapeYaml(afterIndent.slice(1, close)); }
+        }
       }
     } else if (afterIndent.startsWith("'")) {
       let close = -1, pos = 1;
@@ -4005,6 +4044,10 @@ class StreamParser {
       if (close > 0) {
         const ci = findKeySepTop(afterIndent, close);
         if (ci >= 0) { colonIdx = indent + ci; key = afterIndent.slice(1, close).replace(/''/g, "'"); }
+        else {
+          const cq = compactQuotedKeySep(afterIndent, 0);
+          if (cq >= 0) { colonIdx = indent + cq; key = afterIndent.slice(1, close).replace(/''/g, "'"); }
+        }
       }
     }
     if (colonIdx < 0) colonIdx = findKeySepTop(line, indent);
@@ -4141,6 +4184,11 @@ class StreamParser {
     if (ci >= 0 && item[ci + 1] === undefined) {
       const key = item.slice(0, ci).trim();
       this.pendingScalar = { seqCtx, seqIndent: indent, value: key + ':', raw: item, anchor: null, colonIdx: ci, lines: null, quote: null, parts: null };
+      return;
+    }
+    const cq = compactQuotedKeySep(item.trim());
+    if (cq >= 0) {
+      this._openSeqItemMapping(seqCtx, indent, item.trim(), cq);
       return;
     }
     const itemTrim = item.trim();
