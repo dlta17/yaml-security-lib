@@ -1321,11 +1321,15 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
       if (keySep === 0) throw new YAMLException('YAML: missed comma between flow collection entries');
       if (keySep > 0 && (end < 0 || keySep < end)) end = keySep;
     }
+    // A block-context plain scalar cannot contain a `: ` key separator, even
+    // when a comment or flow indicator follows it (mirrors js-yaml's "bad
+    // indentation of a mapping entry"). Quotes and flow indicators are literal
+    // characters in a plain scalar, so any `:` before the first comment counts.
+    if (_blockValue && blockKeySepTop(s) >= 0 && !_allowKeySep)
+      throw new YAMLException('YAML: bad indentation of a mapping entry');
     if (end < 0) {
       if (_inValue && s.indexOf('\n') >= 0 && findKeySep(s) >= 0)
         throw new YAMLException('YAML: missing separating comma in flow mapping');
-      if (_blockValue && findKeySep(s) >= 0 && !_allowKeySep)
-        throw new YAMLException('YAML: bad indentation of a mapping entry');
       const bare = s.trim();
       if (/^![^\s]+$/.test(bare)) aScalar('', AST_PLAIN, _astAnchor, fullTagName(bare));
       else aScalar(astScalarString(s), AST_PLAIN, _astAnchor, _astTag);
@@ -2013,6 +2017,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
               const cont = [];
               const firstSC = splitPlainComment(line);
               if (firstSC.commented) commentedLine = true;
+              // A plain-scalar continuation line cannot contain a `: ` key
+              // separator (mirrors js-yaml: "bad indentation of a mapping
+              // entry"); quotes/flow indicators are literal in a plain scalar.
+              if (blockKeySepTop(firstSC.content) >= 0) throw err('bad indentation of a mapping entry');
               cont.push(firstSC.content);
               if (!firstSC.commented) {
                 while (n < ls.length) {
@@ -2021,7 +2029,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
                   const ni = getIndent(ls[n]);
                   if (ni <= lastInlineKeyIndent) break;
                   if (t.startsWith('#')) { lastInlineInterrupted = true; break; }
-                  if (findKeySep(ls[n].slice(ni)) >= 0) throw err('bad indentation of a mapping entry');
+                  if (blockKeySepTop(ls[n].slice(ni)) >= 0) throw err('bad indentation of a mapping entry');
                   const sc = splitPlainComment(ls[n]);
                   cont.push(sc.content);
                   n++;
@@ -3352,6 +3360,25 @@ function findKeySepTop(str, start) {
   return -1;
 }
 
+// First `:` that starts a mapping key inside a block-context plain scalar
+// (js-yaml semantics). Quotes and flow indicators are literal characters in a
+// plain scalar, so any `:` followed by whitespace or EOL — before any comment
+// — is a key separator. Returns -1 when the scalar contains none.
+function blockKeySepTop(s) {
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '#') {
+      if (i === 0 || s[i - 1] === ' ' || s[i - 1] === '\t') return -1;
+      continue;
+    }
+    if (ch === ':') {
+      if (i + 1 >= s.length || s[i + 1] === ' ' || s[i + 1] === '\t' || s[i + 1] === '\n' || s[i + 1] === '\r')
+        return i;
+    }
+  }
+  return -1;
+}
+
 // Detect a key-value separator inside a flow sequence item (streaming
 // variant): the first `:` at flow depth 0, honoring quotes, comments and
 // nested flow collections. Returns -1 when the item is a plain scalar.
@@ -3821,7 +3848,7 @@ class StreamParser {
       if (trimmed.startsWith(':')) {
         const valStr = trimmed.slice(1).trim();
         if (valStr === '' || valStr.startsWith('#')) { pk.ctx.expectValue = true; return; }
-        this._handleValue(pk.ctx, valStr);
+        this._handleValue(pk.ctx, valStr, true);
         return;
       }
       this._emitScalar(pk.ctx, null, '');
@@ -3845,11 +3872,18 @@ class StreamParser {
         return;
       }
       if (indent > pend.seqIndent) {
-        if (pend.colonIdx < 0 && this._isPlainContinuation(line, indent)) {
-          if (pend.lines) pend.lines.push(line);
-          else pend.lines = [pend.raw, line];
-          this.pendingScalar = pend;
-          return;
+        if (pend.colonIdx < 0) {
+          // A plain-scalar continuation line cannot contain a `: ` key
+          // separator (mirrors js-yaml's "bad indentation of a mapping entry").
+          const rel = line.slice(indent);
+          if (!pend.explicit && !pend.quote && blockKeySepTop(rel) >= 0)
+            throw this._err('bad indentation of a mapping entry');
+          if (this._isPlainContinuation(line, indent)) {
+            if (pend.lines) pend.lines.push(line);
+            else pend.lines = [pend.raw, line];
+            this.pendingScalar = pend;
+            return;
+          }
         }
         this.pendingScalar = null;
         if (pend.colonIdx >= 0) {
@@ -4339,7 +4373,7 @@ class StreamParser {
 
   // ── Values: block scalar, flow, anchors, aliases ─────────
 
-  _handleValue(ctx, valStr) {
+  _handleValue(ctx, valStr, explicitValue) {
     let anchor = null;
     let rest = valStr.trim();
     const am = rest.match(/^&([^ \t,\[\]{}]+)\s*(.*)/);
@@ -4389,7 +4423,12 @@ class StreamParser {
     }
     const v = resolveScalarTop(rest, this.schema, this.tagMap);
     if (rest[0] !== '"' && rest[0] !== "'" && ctx && ctx.kind === 'map' && ctx.pendingKey !== null) {
-      this.pendingScalar = { seqCtx: ctx, seqIndent: ctx.indent, value: v, raw: rest, anchor, colonIdx: -1, lines: null, quote: null, parts: null };
+      // A block plain scalar cannot contain a `: ` key separator on its first
+      // line (mirrors js-yaml's "bad indentation of a mapping entry"). Anchors,
+      // tags and explicit-key values take different, permissively-parsed paths.
+      if (!explicitValue && !anchor && !rest.startsWith('!') && blockKeySepTop(rest) >= 0)
+        throw this._err('bad indentation of a mapping entry');
+      this.pendingScalar = { seqCtx: ctx, seqIndent: ctx.indent, value: v, raw: rest, anchor, colonIdx: -1, lines: null, quote: null, parts: null, explicit: !!explicitValue };
       return;
     }
     this._emitScalar(ctx, v, valStr, anchor);
@@ -4789,10 +4828,11 @@ class StreamParser {
 
   _isPlainContinuation(line, indent) {
     const c = line.slice(indent);
-    if (c === '' || c.startsWith('#') || c === '-' || c.startsWith('- ') || c === '?' || c.startsWith('? ') ||
-        c.startsWith('&') || c.startsWith('*') || c.startsWith('!') || c.startsWith('|') || c.startsWith('>') ||
-        c.startsWith('[') || c.startsWith('{')) return false;
-    if (findKeySepTop(c) >= 0) return false;
+    // js-yaml folds any deeper line into an inline plain scalar unless it is
+    // blank/comment or contains a `: ` key separator (`- b`, `[1, 2]`, `{b}`,
+    // `&x b`, `>`, ... are all literal continuation text).
+    if (c === '' || c.startsWith('#')) return false;
+    if (blockKeySepTop(c) >= 0) return false;
     return true;
   }
 

@@ -97,6 +97,36 @@ assert(!p.parse('{a: : 3}').ok, 'colon-space value rejected');
 assertEqual(p.parse('{a: {b:c}}').result, { a: { 'b:c': null } }, 'nested attached-colon key');
 assertEqual(p.parse('[1: 2]').result, [{ 1: 2 }], 'flow seq numeric implicit key');
 
+// ── Block plain-scalar ':' key separators rejected (js-yaml parity) ──
+assert(!p.parse('key: a: b').ok, 'block plain value with colon-space rejected');
+assert(!p.parse('key: some text: more').ok, 'colon-space later in value rejected');
+assert(!p.parse('key: a b: c').ok, 'colon-space after multiword rejected');
+assert(!p.parse('key: a\tb: c').ok, 'tab before colon-space rejected');
+assert(!p.parse('key: - a: b').ok, 'block value then nested key rejected');
+assert(!p.parse('key: 1: 2').ok, 'numeric block value colon-space rejected');
+assert(!p.parse('key: a:').ok, 'trailing colon-space rejected');
+assert(!p.parse('key: a :').ok, 'space before trailing colon rejected');
+assert(!p.parse('key: x# c: d').ok, 'comment-looking value colon-space rejected');
+assert(!p.parse('key: a: # comment').ok, 'value then comment colon-space rejected');
+assertEqual(p.parse('key: a :b c').result, { key: 'a :b c' }, 'attached colon stays scalar');
+assertEqual(p.parse('key: http://x').result, { key: 'http://x' }, 'scheme colon stays scalar');
+assertEqual(p.parse('key: a:b').result, { key: 'a:b' }, 'attached colon stays scalar');
+assertEqual(p.parse('key: 10:30:00').result, { key: '10:30:00' }, 'time colon stays scalar');
+assert(!p.parse('key: a "b: c"').ok, 'plain scalar then quoted scalar rejected');
+
+// ── Block plain-scalar continuation (js-yaml parity) ──
+assert(!p.parse('key: a\n  b: c').ok, 'indented key continuation rejected');
+assert(!p.parse('key: a\n  b: c\nnext: 1').ok, 'indented key continuation with sibling rejected');
+assert(!p.parse('key: a: b\n  c: d').ok, 'nested key continuation after value rejected');
+assert(!p.parse('key: a\n  {b: 1}').ok, 'flow map continuation rejected');
+assertEqual(p.parse('key: a\n  {b:c}').result, { key: 'a {b:c}' }, 'attached-colon flow folds');
+assertEqual(p.parse('key: a\n  b c').result, { key: 'a b c' }, 'plain continuation folds');
+assertEqual(p.parse('key: a\n  [1, 2]').result, { key: 'a [1, 2]' }, 'flow seq continuation folds');
+assertEqual(p.parse('key: a\nb: c').result, { key: 'a', b: 'c' }, 'sibling key ends scalar');
+assertEqual(p.parse('list:\n  - a: b\n').result, { list: [{ a: 'b' }] }, 'seq item block mapping valid');
+assertEqual(p.parse('- a: b\n  c: d').result, [{ a: 'b', c: 'd' }], 'seq block mapping multi-key valid');
+assert(!p.parse('- a: b\n    c: d').ok, 'seq block mapping deeper indent rejected');
+
 // ── Duplicate keys ──
 assert(!p.parse('x: 1\nx: 2').ok, 'duplicate key detected');
 assert(!p.parse('{a: 1, a: 2}').ok, 'inline duplicate key');

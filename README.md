@@ -361,6 +361,12 @@ parser.end()
 
 yaml-security-lib passes **all 406** official [YAML Test Suite](https://github.com/yaml/yaml-test-suite) test cases (100%, 351 files) — including every SHOULD-FAIL security-relevant case — while enforcing its security protections (duplicate keys, alias bombs, prototype pollution, expansion limits). The [`tree()`](#-treeyamlstr-opts--string) event stream matches **262/262** conformance cases (the 82 SHOULD-FAIL cases throw as expected).
 
+Plain-scalar `:` handling matches **js-yaml** in both the batch and streaming parsers (the streaming fuzz oracle is js-yaml v5):
+
+- Flow collections require commas between entries: `{a: 1 b: 2}` and `[a: 1 b: 2]` throw `missed comma between flow collection entries`.
+- Block plain scalars reject `: ` key separators: `key: a: b` and `key: a\n  b: c` throw `bad indentation of a mapping entry`, while attached colons stay literal (`key: a:b`, `key: http://x`, `key: 10:30:00`).
+- Streaming continuation lines fold into the plain scalar (`key: a\n  - b` → `"a - b"`, `key: a\n  [1, 2]`, `key: a\n  {b:c}`).
+
 ## Schema System
 
 Built-in YAML types (`!!str`, `!!int`, `!!float`, `!!bool`, `!!null`, `!!timestamp`, `!!binary`) are resolved automatically. You can extend or replace them with custom types.

@@ -149,6 +149,27 @@ checkThrows('missing comma after value', 'key: {a: 1, b: 2 c: 3}\n');
 checkThrows('missing comma before comma', 'key: {a: 1 b: 2, c: 3}\n');
 checkThrows('colon-space value', 'key: {a: : 3}\n');
 checkThrows('empty colon value', 'key: {a: :}\n');
+checkThrows('block plain colon-space', 'key: a: b\n');
+checkThrows('block plain colon-space later', 'key: some text: more\n');
+checkThrows('block plain tab colon-space', 'key: a\tb: c\n');
+checkThrows('block value nested key', 'key: - a: b\n');
+checkThrows('block value numeric colon-space', 'key: 1: 2\n');
+checkThrows('block value trailing colon', 'key: a:\n');
+checkThrows('block value comment colon-space', 'key: a: # comment\n');
+checkThrows('block indented key continuation', 'key: a\n  b: c\n');
+checkThrows('block indented flow map continuation', 'key: a\n  {b: 1}\n');
+checkThrows('block seq mapping deeper indent', '- a: b\n    c: d\n');
+checkThrows('block plain then quoted', 'key: a "b: c"\n');
+
+checkAll('block plain attached colon', 'key: a:b\n');
+checkAll('block plain scheme colon', 'key: http://x\n');
+checkAll('block plain space colon', 'key: a :b c\n');
+checkAll('block plain folded seq dash', 'key: a\n  [1, 2]\n');
+checkAll('block plain folded map', 'key: a\n  {b:c}\n');
+checkAll('block plain folded plain', 'key: a\n  b c\n');
+checkAll('block sibling key ends scalar', 'key: a\nb: c\n');
+checkAll('block seq item mapping', 'list:\n  - a: b\n');
+checkAll('block seq item mapping multi', '- a: b\n  c: d\n');
 
 function checkAll(name, yaml) {
   const expected = parseAll(yaml);

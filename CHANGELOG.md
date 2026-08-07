@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.1 (2026-08-07)
+
+### Fixes: plain-scalar `:` parsing parity with js-yaml (batch + stream)
+- **Missing commas between flow entries are now rejected** (`{a: 1 b: 2}`, `[a: 1 b: 2]`). Previously a plain scalar tail swallowed the implicit next key; now the flow parser stops a plain scalar at the key-separator colon and throws `missed comma between flow collection entries`, matching js-yaml.
+- **Block plain scalars cannot contain a `: ` key separator** (`key: a: b`, `key: a\n  b: c`, `key: a: # comment`). Previously these parsed as scalars; now they throw `bad indentation of a mapping entry` like js-yaml. Attached colons stay literal (`key: a:b`, `key: http://x`, `key: 10:30:00`).
+- **Streaming plain-scalar continuations now fold js-yaml-style** (`key: a\n  - b` → `"a - b"`, `key: a\n  [1, 2]`, `key: a\n  {b:c}`), instead of the old code that truncated/ignored deeper continuation lines.
+- `? key\n: a: b` explicit-key values still parse permissively (`{ key: { a: "b" } }`).
+- Tests: `test/index.js` +30 (flow missing-comma, block `: ` rejection, block continuation), `test/stream.js` +21 (same coverage + folding). Full suite green: 187 + 262 + 112 + 1645 + 406 (YAML Test Suite) + 262 + 95 + 60.
+
 ## 1.12.0 (2026-08-07)
 
 ### New: YAML linter
