@@ -126,6 +126,20 @@ assertEqual(p.parse('key: a\nb: c').result, { key: 'a', b: 'c' }, 'sibling key e
 assertEqual(p.parse('list:\n  - a: b\n').result, { list: [{ a: 'b' }] }, 'seq item block mapping valid');
 assertEqual(p.parse('- a: b\n  c: d').result, [{ a: 'b', c: 'd' }], 'seq block mapping multi-key valid');
 assert(!p.parse('- a: b\n    c: d').ok, 'seq block mapping deeper indent rejected');
+assertEqual(p.parse('key: a\n  - b').result, { key: 'a - b' }, 'dash continuation folds');
+assertEqual(p.parse('key: a\n  "b"').result, { key: 'a "b"' }, 'quoted continuation folds');
+assertEqual(p.parse('key: a\n  &x b').result, { key: 'a &x b' }, 'anchor continuation folds');
+assertEqual(p.parse('key: a\n  ? b').result, { key: 'a ? b' }, 'question continuation folds');
+assertEqual(p.parse('key: a\n  ...').result, { key: 'a ...' }, 'deeper doc-end marker folds');
+assertEqual(p.parse('key: a\n  ---').result, { key: 'a ---' }, 'deeper doc-start marker folds');
+assertEqual(p.parse('key: a\n  |\n  text').result, { key: 'a | text' }, 'block-scalar indicator folds');
+assertEqual(p.parse('key: a\n  *ref').result, { key: 'a *ref' }, 'alias token folds');
+assertEqual(p.parse('key: a\n  !tag x').result, { key: 'a !tag x' }, 'tag folds');
+assertEqual(p.parse('key: a\n  - b\n  c d\nnext: 1').result, { key: 'a - b c d', next: 1 }, 'multi-line continuation folds');
+assertEqual(p.parse('- a\n  - b').result, ['a - b'], 'seq dash continuation folds');
+assertEqual(p.parse('a\n  ...').result, 'a ...', 'root scalar deeper doc-end folds');
+assertEqual(p.parse('a\n...').result, 'a', 'root scalar column-0 doc-end terminates');
+assert(!p.parse('key: a\n  ... : x').ok, 'marker with key-sep rejected');
 
 // ── Duplicate keys ──
 assert(!p.parse('x: 1\nx: 2').ok, 'duplicate key detected');

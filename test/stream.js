@@ -170,6 +170,18 @@ checkAll('block plain folded plain', 'key: a\n  b c\n');
 checkAll('block sibling key ends scalar', 'key: a\nb: c\n');
 checkAll('block seq item mapping', 'list:\n  - a: b\n');
 checkAll('block seq item mapping multi', '- a: b\n  c: d\n');
+checkAll('block dash continuation folds', 'key: a\n  - b\n');
+checkAll('block anchor continuation folds', 'key: a\n  &x b\n');
+checkAll('block question continuation folds', 'key: a\n  ? b\n');
+checkAll('block quoted continuation folds', 'key: a\n  "b"\n');
+checkAll('block deeper doc-end folds', 'key: a\n  ...\n');
+checkAll('block deeper doc-start folds', 'key: a\n  ---\nnext: 1\n');
+checkAll('block multi-line continuation folds', 'key: a\n  - b\n  c d\nnext: 1\n');
+checkAll('root scalar deeper doc-end folds', 'a\n  ...\n');
+checkAll('root scalar column-0 doc-end', 'a\n...\n');
+checkAll('root scalar col-0 doc-start multi-doc', 'a\n---\n');
+checkAll('seq dash continuation folds', '- a\n  - b\n');
+checkAll('root scalar multi-doc after end', 'a\n...\nb: 1\n');
 
 function checkAll(name, yaml) {
   const expected = parseAll(yaml);

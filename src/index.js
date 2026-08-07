@@ -1699,6 +1699,61 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
       const indent = getIndent(line);
       const trimmed = line.trim();
       if (trimmed === '' || trimmed.startsWith('#')) { if (trimmed.startsWith('#') && lastInlineScalar !== undefined) lastInlineInterrupted = true; i++; continue; }
+      // A plain line with no key separator is only legal as a continuation of the
+      // previous inline plain-scalar value (no comment/blank interrupting). This
+      // runs before dash/anchor/quoted-key handling so any deeper line folds
+      // into the scalar, whatever its leading indicator (`- b`, `"b"`, `&x b`,
+      // `? b`, `[1, 2]`, `...` ... — all literal text in a plain scalar).
+      if (lastInlineScalar !== undefined && !lastInlineInterrupted && indent > lastInlineKeyIndent) {
+        // A comment on the initial value line cuts the scalar short; any
+        // deeper content line is then illegal (js-yaml: "bad indentation
+        // of a mapping entry").
+        if (lastInlineCommented) throw err('bad indentation of a mapping entry');
+        let n = i + 1;
+        let commentedLine = false;
+        const cont = [];
+        const firstSC = splitPlainComment(line);
+        if (firstSC.commented) commentedLine = true;
+        // A plain-scalar continuation line cannot contain a `: ` key
+        // separator (mirrors js-yaml: "bad indentation of a mapping
+        // entry"); quotes/flow indicators are literal in a plain scalar.
+        if (blockKeySepTop(firstSC.content) >= 0) throw err('bad indentation of a mapping entry');
+        cont.push(firstSC.content);
+        if (!firstSC.commented) {
+          while (n < ls.length) {
+            const t = ls[n].trim();
+            if (t === '') { cont.push(ls[n]); n++; continue; }
+            const ni = getIndent(ls[n]);
+            if (ni <= lastInlineKeyIndent) break;
+            if (t.startsWith('#')) { lastInlineInterrupted = true; break; }
+            if (blockKeySepTop(ls[n].slice(ni)) >= 0) throw err('bad indentation of a mapping entry');
+            const sc = splitPlainComment(ls[n]);
+            cont.push(sc.content);
+            n++;
+            if (sc.commented) { commentedLine = true; break; }
+          }
+        }
+        if (commentedLine) {
+          // After the scalar was cut short by a comment, any remaining
+          // content line at a deeper indent is illegal.
+          while (n < ls.length) {
+            const t = ls[n].trim();
+            const ni = getIndent(ls[n]);
+            if (t === '' || t.startsWith('#')) { n++; continue; }
+            if (ni > lastInlineKeyIndent) throw err('bad indentation of a mapping entry');
+            break;
+          }
+        }
+        const joined = String(lastInlineScalar) + '\n' + cont.join('\n');
+        safeAssign(result, lastInlineKey, track(parseScalar(joined)));
+        if (astOn && !state._astSuppress && ast.length > 0 && ast[ast.length - 1].t === 'v')
+          ast.pop();
+        aScalar(astScalarString(joined), astStyleFromRaw(joined));
+        lastInlineScalar = undefined;
+        lastInlineKey = undefined;
+        i = n;
+        continue;
+      }
       if (indent < baseIndent) break;
       if (trimmed === '...' || trimmed.startsWith('... ') || trimmed.startsWith('...\t')) {
         if (trimmed === '...') break;
@@ -2004,58 +2059,6 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
               if (Object.keys(result).length > 0 || lastKeyIndent >= 0 || (inSeq && seq.length > 0))
                 throw err('can not read a block mapping entry; a multiline key may not be an implicit key');
               i++; continue;
-            }
-            // A plain line with no key separator is only legal as a continuation of the
-            // previous inline plain-scalar value (no comment/blank interrupting).
-            if (lastInlineScalar !== undefined && !lastInlineInterrupted && getIndent(line) > lastInlineKeyIndent) {
-              // A comment on the initial value line cuts the scalar short; any
-              // deeper content line is then illegal (js-yaml: "bad indentation
-              // of a mapping entry").
-              if (lastInlineCommented) throw err('bad indentation of a mapping entry');
-              let n = i + 1;
-              let commentedLine = false;
-              const cont = [];
-              const firstSC = splitPlainComment(line);
-              if (firstSC.commented) commentedLine = true;
-              // A plain-scalar continuation line cannot contain a `: ` key
-              // separator (mirrors js-yaml: "bad indentation of a mapping
-              // entry"); quotes/flow indicators are literal in a plain scalar.
-              if (blockKeySepTop(firstSC.content) >= 0) throw err('bad indentation of a mapping entry');
-              cont.push(firstSC.content);
-              if (!firstSC.commented) {
-                while (n < ls.length) {
-                  const t = ls[n].trim();
-                  if (t === '') { cont.push(ls[n]); n++; continue; }
-                  const ni = getIndent(ls[n]);
-                  if (ni <= lastInlineKeyIndent) break;
-                  if (t.startsWith('#')) { lastInlineInterrupted = true; break; }
-                  if (blockKeySepTop(ls[n].slice(ni)) >= 0) throw err('bad indentation of a mapping entry');
-                  const sc = splitPlainComment(ls[n]);
-                  cont.push(sc.content);
-                  n++;
-                  if (sc.commented) { commentedLine = true; break; }
-                }
-              }
-              if (commentedLine) {
-                // After the scalar was cut short by a comment, any remaining
-                // content line at a deeper indent is illegal.
-                while (n < ls.length) {
-                  const t = ls[n].trim();
-                  const ni = getIndent(ls[n]);
-                  if (t === '' || t.startsWith('#')) { n++; continue; }
-                  if (ni > lastInlineKeyIndent) throw err('bad indentation of a mapping entry');
-                  break;
-                }
-              }
-              const joined = String(lastInlineScalar) + '\n' + cont.join('\n');
-              safeAssign(result, lastInlineKey, track(parseScalar(joined)));
-              if (astOn && !state._astSuppress && ast.length > 0 && ast[ast.length - 1].t === 'v')
-                ast.pop();
-              aScalar(astScalarString(joined), astStyleFromRaw(joined));
-              lastInlineScalar = undefined;
-              lastInlineKey = undefined;
-              i = n;
-              continue;
             }
             throw err('unexpected content: expected a mapping key or sequence item');
           }
@@ -2652,7 +2655,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
             const tl = tagLines[ti];
             const tt = tl.trim();
             if (tt === '' || tt.startsWith('#')) continue;
-            if (tt === '...' || tt.startsWith('... ')) { contEnd = ti; break; }
+            if (/^\.\.\.([ \t]|$)/.test(tl)) { contEnd = ti; break; }
             if (/^(---|\.\.\.)([ \t]|$)/.test(tl))
               throw err('expected a single document in the stream, but found more');
             if (closedQuote)
@@ -2676,12 +2679,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
       }
     }
   } else if (findKeySep(topContent) < 0 && contentLines[0].trim() !== '-' && !topContent.startsWith('- ') && !topContent.startsWith('-\t') && !topContent.startsWith('&') && !topContent.startsWith('*') && !topContent.startsWith('?')) {
-    // A document-end marker on its own line ends the (root scalar) document.
+    // A document-end marker at column 0 ends the (root scalar) document; a
+    // deeper-indented one folds into the plain scalar (js-yaml parity).
     let scalarLines = contentLines;
     let afterDocEnd = [];
     for (let i = 1; i < scalarLines.length; i++) {
       const tt = scalarLines[i].trim();
-      if (tt === '...' || tt.startsWith('... ')) { afterDocEnd = scalarLines.slice(i + 1); scalarLines = scalarLines.slice(0, i); break; }
+      if (/^\.\.\.([ \t]|$)/.test(scalarLines[i])) { afterDocEnd = scalarLines.slice(i + 1); scalarLines = scalarLines.slice(0, i); break; }
       // A document-start marker at column 0 inside a multiline quoted scalar
       // is rejected ("unexpected end of the document"); in a plain scalar it
       // starts a second document.
@@ -3671,6 +3675,7 @@ class StreamParser {
 
   _emit(type, payload) {
     const ev = payload === undefined ? { type } : { type, ...payload };
+    if (type === 'documentStart') this.root = undefined;
     if (this.validator) this._feedValidator(type, payload, ev);
     const hs = this.handlers[type];
     if (hs) for (const cb of hs) cb(ev);
@@ -3786,14 +3791,24 @@ class StreamParser {
     const trimmed = line.trim();
 
     if (this.rootMode === 'scalar' && this._rootScalarLines !== null) {
-      if (findKeySepTop(line, 0) >= 0) {
+      // A document marker at column 0 ends the root scalar document; the normal
+      // marker handlers below close it and start the next one.
+      const col0Marker = this._indentOf(line) === 0 &&
+        ((trimmed === '...' || trimmed.startsWith('... ') || trimmed.startsWith('...\t')) ||
+         (trimmed === '---' || trimmed.startsWith('--- ') || trimmed.startsWith('---\t')));
+      if (col0Marker) {
+        this._closeDocument();
+        this.rootMode = undefined;
+        this._rootScalarLines = null;
+      } else if (findKeySepTop(line, 0) >= 0) {
         this.rootMode = 'block';
         this._rootScalarLines = null;
         this._handleContentLine(line);
         return;
+      } else {
+        this._rootScalarLines.push(line);
+        return;
       }
-      this._rootScalarLines.push(line);
-      return;
     }
 
     if (trimmed === '' || trimmed.startsWith('#')) return;
@@ -3807,11 +3822,32 @@ class StreamParser {
     }
 
     if (trimmed === '...' || trimmed.startsWith('... ')) {
+      const indent = this._indentOf(line);
+      const pend = this.pendingScalar;
+      // A deeper-indented marker inside an inline plain scalar is literal text
+      // (`key: a\n  ...` folds to `"a ..."`), not a document end; a `: ` in it
+      // is the same bad-indentation error as any other continuation line.
+      if (pend && pend.colonIdx < 0 && indent > pend.seqIndent) {
+        const rel = line.slice(indent);
+        if (!pend.explicit && !pend.quote && blockKeySepTop(rel) >= 0)
+          throw this._err('bad indentation of a mapping entry');
+        if (this._isPlainContinuation(line, indent)) {
+          this._handleContentLine(line);
+          return;
+        }
+      }
       this._closeDocument();
       return;
     }
 
     if (trimmed === '---' || trimmed.startsWith('--- ')) {
+      const indent = this._indentOf(line);
+      const pend = this.pendingScalar;
+      // Same for a deeper-indented document-start marker.
+      if (pend && pend.colonIdx < 0 && indent > pend.seqIndent && this._isPlainContinuation(line, indent)) {
+        this._handleContentLine(line);
+        return;
+      }
       if (this.docStarted && !this.docClosed) this._closeDocument();
       this._emit('documentStart');
       this.docStarted = true;
@@ -3824,7 +3860,7 @@ class StreamParser {
       return;
     }
 
-    if (!this.docStarted) { this._emit('documentStart'); this.docStarted = true; this.docClosed = false; }
+    if (!this.docStarted || this.docClosed) { this._emit('documentStart'); this.docStarted = true; this.docClosed = false; }
 
     this._handleContentLine(line);
   }

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.2 (2026-08-07)
+
+### Fixes: block plain-scalar continuation folding parity with js-yaml (batch + stream)
+- **Batch now folds any deeper continuation line into an inline plain scalar**, whatever its leading indicator — `key: a\n  - b` → `"a - b"`, `key: a\n  "b"`, `key: a\n  &x b`, `key: a\n  ? b`, `key: a\n  |\n  text`, `key: a\n  *ref`, `key: a\n  !tag x`, `key: a\n  ---`/`...`. Previously the dash/anchor/quoted-key/`?` handlers intercepted these and threw. The continuation check now runs at the top of the block loop, before those handlers.
+- **Sequence items fold too**: `- a\n  - b` → `["a - b"]`, `- a\n  b` → `["a b"]`.
+- **Root plain scalars**: a deeper-indented `...`/`---` folds (`a\n  ...` → `"a ..."`), while a column-0 marker still ends the document (`a\n...` → `"a"`); a `...`/`---` containing a `: ` separator still throws `bad indentation of a mapping entry`.
+- **Streaming multi-document fixes**: a column-0 `...` now correctly ends a root-scalar document and subsequent content starts a new document (`a\n...\nb: 1` → `["a", {b: 1}]`); an empty second document emits `null` instead of the stale first document value; deeper-indented `...`/`---` inside a plain scalar fold instead of closing the document.
+- Tests: `test/index.js` +14, `test/stream.js` +12. Full suite green: 201 + 262 + 124 + 1645 + 406 (YAML Test Suite) + 262 + 95 + 60.
+
 ## 1.12.1 (2026-08-07)
 
 ### Fixes: plain-scalar `:` parsing parity with js-yaml (batch + stream)
