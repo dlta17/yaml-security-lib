@@ -287,6 +287,24 @@ assertThrows(() => YamlSecurity.setLimits({ maxNodes: 1.5 }), 'setLimits rejects
 assertThrows(() => YamlSecurity.setLimits({ maxExpansion: Infinity }), 'setLimits rejects Infinity');
 YamlSecurity.setLimits(); // reset
 
+// ── Constructor opts honor every limit key, like setLimits ──
+const ctorAlias = new YamlSecurity({ maxAlias: 2 });
+assert(ctorAlias.parse('&x 1\na: *x\nb: *x\nc: *x').ok === false, 'constructor maxAlias=2 blocks 3 aliases');
+assert(ctorAlias.parse('&x 1\na: *x\nb: *x').ok, 'constructor maxAlias=2 allows 2 aliases');
+const ctorMB = new YamlSecurity({ maxInputMB: 0.001 });
+assert(ctorMB.parse('x: ' + 'a'.repeat(2000)).ok === false, 'constructor maxInputMB=0.001 blocks large input');
+const ctorBytes = new YamlSecurity({ maxInputBytes: 10 });
+assert(ctorBytes.parse('key: value_longer_than_10_bytes').ok === false, 'constructor maxInputBytes=10 blocks large input');
+const ctorDeep = new YamlSecurity({ maxAliasDepth: 2 });
+assert(!ctorDeep.parse('&w hello\n&x *w\n&y *x\n&z *y\nb: *z').ok, 'constructor maxAliasDepth=2');
+// Constructor validates limits with the same rules as setLimits
+assertThrows(() => new YamlSecurity({ maxNodes: -1 }), 'constructor rejects negative limit');
+assertThrows(() => new YamlSecurity({ maxExpansion: Infinity }), 'constructor rejects Infinity limit');
+assertThrows(() => new YamlSecurity({ maxKeys: 0.5 }), 'constructor rejects float limit');
+assertThrows(() => new YamlSecurity({ maxInputMB: 0 }), 'constructor rejects zero maxInputMB');
+// Unknown constructor keys are ignored
+assert(p.parse('a: 1').ok, 'p still usable after constructor tests');
+
 // ── Tab indentation ──
 assert(!p.parse('a:\n\tb: 1').ok, 'tab indentation rejected');
 

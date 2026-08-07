@@ -272,6 +272,21 @@ function testLimits() {
   let threw3 = false;
   try { s3.write('a: 1\nb: 2\nc: 3\n'); s3.end(); } catch (e) { threw3 = true; }
   if (!threw3) { fail++; fails.push('maxKeys not enforced'); } else pass++;
+
+  // Alias expansion bomb must be caught by maxExpansion (not just maxAlias):
+  // each `*x` re-exposes the full anchored subtree and is charged its weight.
+  const anchor = Array.from({ length: 200 }, (_, i) => i);
+  const bomb = 'a: &x ' + JSON.stringify(anchor) + '\n'
+    + Array.from({ length: 300 }, (_, i) => 'k' + i + ': *x').join('\n');
+  const s4 = createStream({ maxExpansion: 5000, maxAlias: 100000 });
+  let threw4 = false;
+  try { s4.write(bomb); s4.end(); } catch (e) { threw4 = true; }
+  if (!threw4) { fail++; fails.push('maxExpansion not enforced against alias bomb'); } else pass++;
+
+  // createStream validates limits like setLimits / the YamlSecurity constructor
+  let threw5 = false;
+  try { createStream({ maxNodes: -1 }); } catch (e) { threw5 = true; }
+  if (!threw5) { fail++; fails.push('createStream does not validate limits'); } else pass++;
 }
 testLimits();
 

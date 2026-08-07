@@ -31,6 +31,42 @@ const DEFAULTS = {
 
 let _baseCfg = { ...DEFAULTS };
 
+// Limit keys that must be positive integers (0 is not allowed).
+const LIMIT_POSITIVE_INT = ['maxNodes', 'maxAlias', 'maxAliasDepth', 'maxExpansion', 'maxInputBytes'];
+// Limit keys that must be non-negative integers (0 disables them).
+const LIMIT_NONNEG_INT = ['maxStringLength', 'maxKeys', 'maxDepth'];
+
+// Validate a partial set of limit overrides and return a clean object with only
+// the recognized keys applied. Uses the same rules everywhere limits are set
+// (setLimits, new YamlSecurity({...}), createStream({...})). `maxInputMB` maps
+// onto `maxInputBytes` (1 MiB per MB). Unknown keys are ignored; invalid values
+// throw a YAMLException prefixed with `label`.
+function normalizeLimits(opts, label) {
+  const out = {};
+  if (!opts) return out;
+  for (const key of LIMIT_POSITIVE_INT) {
+    if (opts[key] === undefined) continue;
+    const v = opts[key];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 1 || !Number.isInteger(v))
+      throw new YAMLException(label + ': ' + key + ' must be a positive integer');
+    out[key] = v;
+  }
+  for (const key of LIMIT_NONNEG_INT) {
+    if (opts[key] === undefined) continue;
+    const v = opts[key];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || !Number.isInteger(v))
+      throw new YAMLException(label + ': ' + key + ' must be a non-negative integer');
+    out[key] = v;
+  }
+  if (opts.maxInputMB !== undefined) {
+    const v = opts.maxInputMB;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0.001)
+      throw new YAMLException(label + ': maxInputMB must be a positive number');
+    out.maxInputBytes = Math.round(v * 1_048_576);
+  }
+  return out;
+}
+
 /**
  * Globally adjust parser limits for all instances.
  * Call with no arguments (or `{}`) to reset to defaults.
@@ -38,28 +74,7 @@ let _baseCfg = { ...DEFAULTS };
  */
 export function setLimits(opts) {
   if (!opts || Object.keys(opts).length === 0) { _baseCfg = { ...DEFAULTS }; return; }
-  for (const key of ['maxNodes', 'maxAlias', 'maxAliasDepth', 'maxExpansion', 'maxInputBytes']) {
-    if (opts[key] !== undefined) {
-      const v = opts[key];
-      if (typeof v !== 'number' || !Number.isFinite(v) || v < 1 || !Number.isInteger(v))
-        throw new YAMLException('setLimits: ' + key + ' must be a positive integer');
-      _baseCfg[key] = v;
-    }
-  }
-  for (const key of ['maxStringLength', 'maxKeys', 'maxDepth']) {
-    if (opts[key] !== undefined) {
-      const v = opts[key];
-      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || !Number.isInteger(v))
-        throw new YAMLException('setLimits: ' + key + ' must be a non-negative integer');
-      _baseCfg[key] = v;
-    }
-  }
-  if (opts.maxInputMB !== undefined) {
-    const v = opts.maxInputMB;
-    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0.001)
-      throw new YAMLException('setLimits: maxInputMB must be a positive number');
-    _baseCfg.maxInputBytes = Math.round(v * 1_048_576);
-  }
+  _baseCfg = { ..._baseCfg, ...normalizeLimits(opts, 'setLimits') };
 }
 
 // ── Custom Error ─────────────────────────────────────────
@@ -3383,10 +3398,12 @@ export function validateYaml(yamlStr, spec, opts = {}) {
  */
 export class YamlSecurity {
   /**
-   * @param {{maxAliasDepth?: number, maxNodes?: number, maxExpansion?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number}} [opts]
+   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number}} [opts]
+   *   Per-instance security limits, validated and normalized with the same
+   *   rules as setLimits (unknown keys are ignored, invalid values throw).
    */
   constructor(opts) {
-    this._overrides = opts ? { ...opts } : {};
+    this._overrides = normalizeLimits(opts, 'YamlSecurity');
     this._schema = DEFAULT_SCHEMA;
   }
 
@@ -3402,17 +3419,10 @@ export class YamlSecurity {
   }
 
   // Merge the global base limits with this instance's constructor overrides.
-  // Only the documented override keys are honored.
+  // The overrides were validated and normalized (maxInputMB already folded into
+  // maxInputBytes) at construction time, so a plain spread is enough.
   _getCfg() {
-    const cfg = { ..._baseCfg };
-    const ov = this._overrides;
-    if (ov.maxAliasDepth !== undefined) cfg.maxAliasDepth = ov.maxAliasDepth;
-    if (ov.maxNodes !== undefined) cfg.maxNodes = ov.maxNodes;
-    if (ov.maxExpansion !== undefined) cfg.maxExpansion = ov.maxExpansion;
-    if (ov.maxStringLength !== undefined) cfg.maxStringLength = ov.maxStringLength;
-    if (ov.maxKeys !== undefined) cfg.maxKeys = ov.maxKeys;
-    if (ov.maxDepth !== undefined) cfg.maxDepth = ov.maxDepth;
-    return cfg;
+    return { ..._baseCfg, ...this._overrides };
   }
 
   /**
@@ -3835,10 +3845,8 @@ class StreamParser {
    * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', schema?: Schema, validate?: any, abortOnError?: boolean}} [opts]
    */
   constructor(opts = {}) {
-    const limitKeys = ['maxNodes', 'maxAlias', 'maxAliasDepth', 'maxExpansion', 'maxInputMB', 'maxInputBytes', 'maxStringLength', 'maxKeys', 'maxDepth'];
     const cfg = getBaseConfig();
-    for (const k of limitKeys) if (opts[k] !== undefined) cfg[k] = opts[k];
-    if (opts.maxInputMB !== undefined) cfg.maxInputBytes = Math.round(opts.maxInputMB * 1048576);
+    Object.assign(cfg, normalizeLimits(opts, 'createStream'));
     this.cfg = cfg;
     this.schema = opts.schema instanceof Schema ? opts.schema : DEFAULT_SCHEMA;
     this.anchorMode = opts.anchors === 'disable' ? 'disable' : 'buffer';
@@ -3867,6 +3875,7 @@ class StreamParser {
     this.anchorSources = new Map();
     this.aliasHits = 0;
     this.produced = 0;
+    this.nodeWeights = new WeakMap();
     this.tagMap = { ...DEFAULT_TAG_MAP };
 
     this.pendingScalar = null;
@@ -4074,13 +4083,30 @@ class StreamParser {
     return i;
   }
 
-  // Charge one produced node against maxNodes / maxExpansion.
-  _count() {
-    this.produced++;
+  // Charge produced nodes against maxNodes / maxExpansion. A collection passed
+  // here (an aliased subtree or a tagged construct) adds its full weight, so an
+  // alias bomb is bounded by maxExpansion exactly like the batch parser; plain
+  // scalars and calls without a value charge 1.
+  _count(value) {
+    this.produced += (value !== null && typeof value === 'object') ? this._weight(value) : 1;
     if (this.cfg.maxNodes > 0 && this.produced > this.cfg.maxNodes)
       throw this._err('nodes limit exceeded (possible bomb) — reached ' + this.produced);
     if (this.cfg.maxExpansion > 0 && this.produced > this.cfg.maxExpansion)
       throw this._err('expansion limit exceeded (possible bomb) — reached ' + this.produced);
+  }
+
+  // Memoized total "weight" of a node (1 + the weight of every reachable
+  // child), mirroring the batch parser's nodeWeight. Used to charge the
+  // expansion counters for aliased subtrees. Safe from re-expansion: each
+  // node is walked once and cached by identity.
+  _weight(node) {
+    if (node === null || typeof node !== 'object') return 1;
+    if (this.nodeWeights.has(node)) return this.nodeWeights.get(node);
+    let w = 1;
+    if (Array.isArray(node)) for (const item of node) w += this._weight(item);
+    else for (const k of Object.keys(node)) w += this._weight(node[k]);
+    this.nodeWeights.set(node, w);
+    return w;
   }
 
   // Enforce maxStringLength on a produced string value.
@@ -4898,7 +4924,7 @@ class StreamParser {
   // into the context's node.
   _emitScalar(ctx, value, raw, anchor, srcAnchor) {
     if (anchor) this._registerAnchor(anchor, value, srcAnchor);
-    this._count();
+    this._count(value);
     this._checkString(value);
     this._emit('scalar', { value, raw });
     this._assignValue(ctx, value);
@@ -5069,7 +5095,7 @@ class StreamParser {
 
   // Count/check and emit a flow scalar value, returning it.
   _flowScalar(val, raw) {
-    this._count();
+    this._count(val);
     this._checkString(val);
     this._emit('scalar', { value: val, raw });
     return val;
