@@ -416,3 +416,38 @@ export function allOf(specs: Spec[]): CombinatorSpec;
 export function not(spec: Spec): NotSpec;
 export function custom(fn: CustomSpec['fn']): CustomSpec;
 
+/** Severity of a lint issue. */
+export type LintSeverity = 'error' | 'warning';
+
+/** Rules enabled by default: `error` for syntax/security, `warning` for style. */
+export const LINT_RULES: Readonly<Record<string, LintSeverity>>;
+
+export interface LintIssue {
+  rule: string;
+  severity: LintSeverity;
+  message: string;
+  line: number;
+  column: number;
+  snippet: string;
+}
+
+export interface LintResult {
+  valid: boolean;
+  issues: LintIssue[];
+  errors: number;
+  warnings: number;
+}
+
+export interface LintOptions {
+  /** Enable/disable rules: an array of rule names, or a map of name → severity/boolean. */
+  rules?: string[] | Record<string, boolean | 0 | 1 | 'off' | 'error' | 'warn' | 'warning'>;
+  /** Maximum allowed line length for the `line-length` rule (default: 120). */
+  maxLineLength?: number;
+}
+
+/**
+ * Lint a YAML string for syntax errors, security concerns, and basic style.
+ * Never throws for YAML content; returns issues with line/column positions.
+ */
+export function lint(yaml: string, options?: LintOptions): LintResult;
+

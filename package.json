@@ -1,10 +1,13 @@
 {
   "name": "yaml-security-lib",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "Secure YAML parser — duplicate key detection, alias depth limiting, prototype pollution prevention",
   "main": "index.cjs",
   "types": "src/index.d.ts",
   "type": "module",
+  "bin": {
+    "yaml-lint": "bin/yaml-lint.js"
+  },
   "exports": {
     ".": {
       "import": "./src/index.min.js",
@@ -17,13 +20,15 @@
     "src/index.cjs",
     "src/index.d.ts",
     "index.cjs",
+    "bin/yaml-lint.js",
     "dist/",
     "LICENSE",
     "LICENSE.COMMERCIAL"
   ],
   "sideEffects": false,
   "scripts": {
-    "test": "node test/index.js && node test/fuzz.js && node test/stream.js && node test/stream-fuzz.js && node test/yaml-test-suite.js && node test/tree-suite.js && node test/validate.js",
+    "test": "node test/index.js && node test/fuzz.js && node test/stream.js && node test/stream-fuzz.js && node test/yaml-test-suite.js && node test/tree-suite.js && node test/validate.js && node test/lint.js",
+    "lint": "node bin/yaml-lint.js examples/basic.js",
     "prepack": "npm run build:cjs && npm run build:esm",
     "example": "node examples/basic.js",
     "build": "npm run build:cjs && npm run build:esm && npm run build:browser",
@@ -39,7 +44,9 @@
     "alias-depth",
     "prototype-pollution",
     "yaml-parse",
-    "safe-yaml"
+    "safe-yaml",
+    "linter",
+    "yaml-lint"
   ],
   "license": "AGPL-3.0-only",
   "author": "Nedal Ibrahim <salamanedal@gmail.com>",

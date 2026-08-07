@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.12.0 (2026-08-07)
+
+### New: YAML linter
+- New `lint(yaml, options)` API returning `{ valid, issues, errors, warnings }` with per-issue `rule`, `severity`, `line`, `column`, and `snippet`.
+- New `bin/yaml-lint.js` CLI (`yaml-lint` binary): lint files or stdin, `--json`, `--max-line-length`, `--help`, `--version`; exit code `1` on error-severity issues, `2` on IO/usage errors.
+- `LINT_RULES` (frozen) lists the 10 default rules; `rules` option supports an array (enable only those) or a map (per-rule severity/off). Unknown rule names throw `TypeError`.
+- Rules:
+  - **error** — `syntax-error`, `duplicate-key`, `anchor-bomb`, `prototype-pollution`.
+  - **warning** — `trailing-spaces`, `line-length` (default 120, `maxLineLength` option), `missing-newline-at-eof`, `space-after-colon` (URLs skipped), `space-after-dash` (numbers like `-5` skipped), `truthy-yes-no` (unquoted yes/no/on/off).
+- Syntax + security rules reuse `YamlSecurity().parseAll`, so multi-document YAML (`---` separated) lints correctly.
+- Linter lives in `src/lint.js` (parser injected to avoid a circular dependency); bundled by rollup into ESM/CJS/browser builds.
+- TypeScript declarations added to `src/index.d.ts` (`LintIssue`, `LintResult`, `LintOptions`, `lint`, `LINT_RULES`).
+- README: new "Linter" section documenting the API, rules table, options, and CLI usage.
+- Tests: new `test/lint.js` suite (60 assertions) wired into `npm test`; added `npm run lint` script (CLI smoke test).
+
 ## 1.11.0 (2026-08-06)
 
 ### New: Schema Validation system

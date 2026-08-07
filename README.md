@@ -505,6 +505,71 @@ The default schema automatically resolves:
 | `!!timestamp` | ISO 8601 dates (`2024-01-01`, `2024-01-01T12:00:00Z`) |
 | `!!binary` | Base64 (explicit only) |
 
+## Linter
+
+`lint(yaml, opts?)` validates a YAML string for **syntax errors**, **security
+concerns**, and basic **style** issues. It never throws for YAML content;
+issues are returned with line/column positions and a severity.
+
+```js
+import { lint } from 'yaml-security-lib';
+
+const result = lint('a: 1\nb: yes\nb: 2\n', {});
+// {
+//   valid: false,
+//   issues: [
+//     { rule: 'duplicate-key', severity: 'error',   line: 3, column: 2, ... },
+//     { rule: 'truthy-yes-no', severity: 'warning', line: 2, column: 3, ... }
+//   ],
+//   errors: 1,
+//   warnings: 1
+// }
+```
+
+`valid` is `true` only when there are **no error-severity** issues.
+
+### Rules
+
+| Rule | Severity | Detects |
+|------|----------|---------|
+| `syntax-error` | error | Unparseable YAML (incl. tabs for indentation) |
+| `duplicate-key` | error | Duplicate mapping keys |
+| `anchor-bomb` | error | Circular aliases / excessive alias expansion |
+| `prototype-pollution` | error | Keys like `__proto__` / `constructor` |
+| `trailing-spaces` | warning | Trailing whitespace at end of line |
+| `line-length` | warning | Lines over `maxLineLength` (default 120) |
+| `missing-newline-at-eof` | warning | File does not end with `\n` |
+| `space-after-colon` | warning | `key:value` instead of `key: value` |
+| `space-after-dash` | warning | `-item` instead of `- item` (numbers like `-5` skipped) |
+| `truthy-yes-no` | warning | Unquoted `yes`/`no`/`on`/`off` (YAML 1.2 strings) |
+
+### Options
+
+```js
+lint(yaml, {
+  maxLineLength: 100,              // line-length threshold
+  rules: ['syntax-error', 'duplicate-key'],       // enable only these rules (everything else off)
+  rules: { 'truthy-yes-no': 'off', 'line-length': 'off' },  // toggle per rule
+});
+```
+
+Rule values accept `false`/`0`/`'off'` (disable), `true`/`'error'`, or
+`'warn'`/`'warning'`. Passing an unknown rule name throws a `TypeError`.
+
+### CLI
+
+A `yaml-lint` binary ships with the package:
+
+```bash
+yaml-lint config.yaml
+yaml-lint --json config.yaml          # machine-readable output
+yaml-lint --max-line-length 100 **/*.yaml
+cat config.yaml | yaml-lint           # stdin when no files are given
+```
+
+Issue output follows the classic `file:line:column` format, and the exit code
+is `1` when any error-severity issue is found, `2` on IO/usage errors.
+
 ## Browser
 
 Pre-built bundles available in `dist/`:
@@ -545,7 +610,7 @@ See [LICENSE](LICENSE) (AGPL-3.0) and [LICENSE.COMMERCIAL](LICENSE.COMMERCIAL).
 
 ```bash
 npm install
-npm test        # unit + fuzz + stream + stream-fuzz + YAML Test Suite + tree suite
+npm test        # unit + fuzz + stream + stream-fuzz + YAML Test Suite + tree suite + validate + lint
 ```
 
 - The YAML Test Suite + tree suite require the suite checkout; set `YAML_SUITE_DIR`

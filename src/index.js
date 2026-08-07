@@ -9,6 +9,7 @@ import {
   optional, nullable, oneOf, anyOf, allOf, not, custom,
   validate, createStreamValidator, fromJSONSchema, toJSONSchema,
 } from './validate.js';
+import { lintCore, LINT_RULES } from './lint.js';
 
 // ── Configuration ────────────────────────────────────────
 
@@ -4873,3 +4874,17 @@ export {
   optional, nullable, oneOf, anyOf, allOf, not, custom,
   validate, createStreamValidator, fromJSONSchema, toJSONSchema,
 };
+
+// ── Linter (see src/lint.js) ─────────────────────────────
+
+/**
+ * Lint a YAML string for syntax errors, security concerns, and basic style.
+ * @param {string} yaml
+ * @param {{rules?: object|string[], maxLineLength?: number}} [options]
+ * @returns {{valid: boolean, issues: Array<{rule: string, severity: string, message: string, line: number, column: number, snippet: string}>, errors: number, warnings: number}}
+ */
+export function lint(yaml, options) {
+  return lintCore(yaml, options || {}, (s) => new YamlSecurity().parseAll(s));
+}
+
+export { LINT_RULES };
