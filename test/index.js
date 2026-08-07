@@ -488,6 +488,23 @@ assert(keyLimit.parse('a: 1\nb: 2\nc: 3').ok, 'maxKeys=3 allows 3-key mapping');
 assert(!keyLimit.parse('{a: 1, b: 2, c: 3, d: 4}').ok, 'maxKeys=3 blocks 4-key inline mapping');
 YamlSecurity.setLimits();
 
+// ── maxDepth ──
+const d3 = new YamlSecurity({ maxDepth: 3 });
+assert(d3.parse('a:\n  b:\n    c:\n      d: 1').ok, 'maxDepth=3 allows 3 nested maps (a.b.c.d)');
+assert(!d3.parse('a:\n  b:\n    c:\n      d:\n        e: 1').ok, 'maxDepth=3 blocks 4 nested maps (a.b.c.d.e)');
+const d2 = new YamlSecurity({ maxDepth: 2 });
+assert(!d2.parse('a:\n  b:\n    c:\n      d: 1').ok, 'maxDepth=2 blocks 3 nested maps');
+assert(!d2.parse('a:\n  - b:\n      c: 1').ok, 'maxDepth=2 counts seq items (map>seq>map depth 3)');
+assert(!d2.parse('- b:\n    c:\n      d: 1').ok, 'maxDepth=2 counts nested seq item maps (depth 3)');
+const dOff = new YamlSecurity({ maxDepth: 0 });
+assert(dOff.parse('a:\n  b:\n    c:\n      d:\n        e: 1').ok, 'maxDepth=0 disables the depth guard');
+const d1 = new YamlSecurity({ maxDepth: 1 });
+assert(d1.parse('- a\n- b').ok, 'maxDepth=1 allows a root sequence of scalars');
+assert(!d1.parse('- a\n- b:\n    c: 1').ok, 'maxDepth=1 blocks a nested seq item map');
+// Sequence items do not reset the depth counter (batch/stream parity)
+assert(!new YamlSecurity({ maxDepth: 2 }).parse('a:\n  - b:\n      c: 1').ok,
+  'seq items keep the block depth counter (no reset across yamlToJS)');
+
 // ── Timestamps (YAML 1.2: implicit = string, explicit !!timestamp = Date) ──
 assertEqual(p.parse('x: 2001-01-23').result, { x: '2001-01-23' }, 'implicit date stays string (YAML 1.2 core)');
 assertEqual(p.parse('x: 2001-01-23T10:30:00Z').result, { x: '2001-01-23T10:30:00Z' }, 'implicit datetime stays string');

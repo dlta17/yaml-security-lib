@@ -268,6 +268,22 @@ function testLimits() {
   try { s2.write('a:\n  b:\n    c:\n      d:\n        e: 1\n'); s2.end(); } catch (e) { threw2 = true; }
   if (!threw2) { fail++; fails.push('maxDepth not enforced'); } else pass++;
 
+  // Sequence items keep the depth counter (batch/stream parity: no reset).
+  const s5 = createStream({ maxDepth: 2 });
+  let threwA = false;
+  try { s5.write('a:\n  - b:\n      c: 1\n'); s5.end(); } catch (e) { threwA = true; }
+  if (!threwA) { fail++; fails.push('maxDepth not enforced across seq items'); } else pass++;
+
+  const s6 = createStream({ maxDepth: 2 });
+  let threwB = false;
+  try { s6.write('- b:\n    c:\n      d: 1\n'); s6.end(); } catch (e) { threwB = true; }
+  if (!threwB) { fail++; fails.push('maxDepth not enforced for nested seq item maps'); } else pass++;
+
+  const s7 = createStream({ maxDepth: 1 });
+  let threwC = false;
+  try { s7.write('- a\n- b\n'); s7.end(); } catch (e) { threwC = true; }
+  if (threwC) { fail++; fails.push('maxDepth=1 should allow a root sequence of scalars'); } else pass++;
+
   const s3 = createStream({ maxKeys: 2 });
   let threw3 = false;
   try { s3.write('a: 1\nb: 2\nc: 3\n'); s3.end(); } catch (e) { threw3 = true; }

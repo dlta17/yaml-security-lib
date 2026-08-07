@@ -371,9 +371,10 @@ const AST_BLOCK = 0, AST_FLOW = 1;
  * @returns {*} Parsed JS value. Throws {@link YAMLException} on invalid YAML
  *             or a security violation.
  */
-function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
+function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
   if (_depth === undefined) _depth = 0;
   if (_schema === undefined) _schema = _baseSchema;
+  if (blockDepth === undefined) blockDepth = 0;
   if (_depth > 50) throw new YAMLException('YAML: recursion too deep (>50) — possible anchor bomb');
   if (byteLength(yamlStr) > cfg.maxInputBytes) {
     throw new YAMLException('YAML: input too large (>' + Math.round(cfg.maxInputBytes / 1048576 * 10) / 10 + 'MB)');
@@ -1813,7 +1814,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
             .filter(l => getIndent(l) > indent)
             .map(l => l.slice(indent))
             .join('\n');
-          setAnchor(aname, track(yamlToJS(dummy, cfg, _depth + 1, _schema, state, tags)));
+          setAnchor(aname, track(yamlToJS(dummy, cfg, _depth + 1, _schema, state, tags, blockDepth + 1)));
         } else {
           setAnchor(aname, track(parseScalar(rest)));
         }
@@ -2008,7 +2009,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
               if (dd === -1 || gi < dd) dd = gi;
             }
             const itemYaml = itemLines.map(l => l.slice(dd)).join('\n');
-            seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state, tags)));
+            seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state, tags, blockDepth + 1)));
           } else {
             aScalar('', AST_PLAIN);
             seq.push(track(null));
@@ -2074,10 +2075,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
           seq.push(track(av === undefined ? dashContent : av));
         } else if (dashContent.trimStart().startsWith('-')) {
           const itemYaml = [dashContent, ...itemLines.map(l => l.slice(itemDedent))].join('\n');
-          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state, tags)));
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state, tags, blockDepth + 1)));
         } else if (isMappingItem) {
           const itemYaml = [dashContent, ...itemLines.map(l => l.slice(itemDedent))].join('\n');
-          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state, tags)));
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state, tags, blockDepth + 1)));
         } else if (itemLines.length === 0) {
           const cveItem = closedValueEnd(dashContent);
           if (cveItem >= 0 && dashContent.slice(cveItem) !== '' && !/^[ \t]+#/.test(dashContent.slice(cveItem))) {
@@ -2099,7 +2100,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
           }
         } else {
           const itemYaml = [dashContent, ...itemLines.map(l => l.slice(itemDedent))].join('\n');
-          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state, tags)));
+          seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state, tags, blockDepth + 1)));
         }
         }
         i = j - 1;
@@ -2174,7 +2175,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
             for (const l of keyLines) { if (l.trim() === '' || l.trim().startsWith('#')) continue; mm = Math.min(mm, getIndent(l)); }
             const ded = mm === Infinity ? 0 : mm;
             const keyContent = [keyStart, ...keyLines.map(l => l === '' ? l : l.slice(ded))].join('\n').trim();
-            keyNode = yamlToJS(keyContent, cfg, _depth + 1, _schema, state, tags);
+            keyNode = yamlToJS(keyContent, cfg, _depth + 1, _schema, state, tags, blockDepth);
             keyAstDone = true;
           } else if (keyStartTrim !== '' && !/^[-\[{&*>!|]/.test(keyStartTrim) && !hasContinuation) {
             keyNode = keyStartTrim;
@@ -2195,7 +2196,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
               for (const l of keyLines) { if (l.trim() === '' || l.trim().startsWith('#')) continue; mm = Math.min(mm, getIndent(l)); }
               const ded = mm === Infinity ? 0 : mm;
               const keyContent = [keyStart, ...keyLines.map(l => l === '' ? l : l.slice(ded))].join('\n').trim();
-              keyNode = yamlToJS(keyContent, cfg, _depth + 1, _schema, state, tags);
+              keyNode = yamlToJS(keyContent, cfg, _depth + 1, _schema, state, tags, blockDepth);
               keyAstDone = true;
             }
             else if (joined.startsWith('[') || joined.startsWith('{')) {
@@ -2557,7 +2558,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
               k++;
             }
             addKey(key);
-            safeAssign(result, key, track(yamlToJS(blockLines.join('\n'), cfg, _depth + 1, _schema, state, tags)));
+            safeAssign(result, key, track(yamlToJS(blockLines.join('\n'), cfg, _depth + 1, _schema, state, tags, blockDepth + 1)));
             i = k;
             continue;
           }
@@ -2575,7 +2576,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
               k++;
             }
             addKey(key);
-            safeAssign(result, key, track(yamlToJS(blockLines.join('\n'), cfg, _depth + 1, _schema, state, tags)));
+            safeAssign(result, key, track(yamlToJS(blockLines.join('\n'), cfg, _depth + 1, _schema, state, tags, blockDepth + 1)));
             i = k;
             continue;
           }
@@ -2730,7 +2731,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
       const frTrail = closePos >= 0 ? rest.slice(closePos + 1).trim() : '';
       if (frTrail.startsWith(':')) {
         // A flow collection used as a block mapping key (`[a, b]: v`).
-        value = parseBlock(0, 0, restLines, undefined, undefined, undefined, rootAnchor, rootTagFull);
+        value = parseBlock(0, 0, restLines, blockDepth, undefined, undefined, rootAnchor, rootTagFull);
       } else {
         const fr = parseInlineFlow(rest, 0, 0, false, false, false, rootAnchor, rootTagFull);
         value = fr.value !== undefined ? fr.value : parseScalar(rest);
@@ -2742,7 +2743,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
       const firstRest = restLines[0].trim();
       const looksBlock = /^[-?]([ \t]|$)/.test(firstRest) || findKeySep(rest) >= 0;
       if (looksBlock) {
-        value = parseBlock(0, 0, restLines, undefined, undefined, undefined, rootAnchor, rootTagFull);
+        value = parseBlock(0, 0, restLines, blockDepth, undefined, undefined, rootAnchor, rootTagFull);
       } else {
         aScalar(astScalarString(rest), AST_PLAIN, rootAnchor, rootTagFull);
         value = parseScalar(rest);
@@ -2771,7 +2772,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     }
     const flowTrail = closePos >= 0 ? topContent.slice(closePos + 1).trim() : '';
     if (flowTrail.startsWith(':')) {
-      result = parseBlock(0, 0);
+      result = parseBlock(0, 0, undefined, blockDepth);
     } else {
       const r = parseInlineFlow(topContent);
       const trailRaw = topContent.slice(r.endPos);
@@ -2822,7 +2823,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     content = content.trim();
     if (findKeySep(content) >= 0 || compactQuotedKeySep(content) >= 0 || /^[-?]([ \t]|$)/.test(content.trim()) || /^-[ \t]/m.test(content)) {
       // A tagged block collection: parse it as a block node carrying the tag.
-      result = track(parseBlock(0, 0, content.split('\n'), undefined, undefined, undefined, null, fullTag));
+      result = track(parseBlock(0, 0, content.split('\n'), blockDepth, undefined, undefined, null, fullTag));
     } else {
       let taggedVal;
       if (content.startsWith('[') || content.startsWith('{')) {
@@ -2908,7 +2909,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags) {
     result = track(parseScalar(rootParts.join('\n')));
     aScalar(astScalarString(rootParts.join('\n')), astStyleFromRaw(rootParts.join('\n')));
   } else {
-    result = parseBlock(0, 0);
+    result = parseBlock(0, 0, undefined, blockDepth);
   }
 
   // Resolve merge keys (<<: *anchor) by copying the source mapping's keys that
