@@ -514,6 +514,52 @@ assert(tsResult.x instanceof Date && tsResult.x.toISOString() === '2001-01-23T00
 const nestedDate = p.parse('a:\n  b: 2001-01-23').result;
 assert(nestedDate.a.b instanceof Date === false && nestedDate.a.b === '2001-01-23', 'nested implicit date stays string');
 
+// ── DoS regression: multiline flow gathering must be linear ──
+// (was O(n²): re-scanning the whole accumulated flow string per line hung
+//  the batch parser on a few thousand lines. Now gathers incrementally.)
+{
+  const perf = new YamlSecurity({ maxNodes: 1000000000, maxInputBytes: 1000000000, maxExpansion: 1000000000 });
+  const flow = 'a: [\n' + '  x,\n'.repeat(20000) + '  ]';
+  const t0 = Date.now();
+  const r = perf.parse(flow);
+  const ms = Date.now() - t0;
+  assert(r.ok, 'large multiline flow (20000 lines) parses');
+  assert(r.result.a.length === 20000, 'multiline flow keeps all items');
+  assert(ms < 3000, 'multiline flow parses in linear time (was O(n²) hang) — ' + ms + 'ms');
+}
+// malformed multiline flow (never closes) must error fast, not hang
+{
+  const bad = 'a: [\n' + '  x,\n'.repeat(20000) + '  1, 2';
+  const t0 = Date.now();
+  const r = p.parse(bad);
+  const ms = Date.now() - t0;
+  assert(!r.ok, 'unterminated multiline flow errors');
+  assert(ms < 3000, 'unterminated multiline flow errors in linear time — ' + ms + 'ms');
+}
+// ── DoS regression: single-line flow seq item slicing must be linear ──
+{
+  const perf = new YamlSecurity({ maxNodes: 1000000000, maxInputBytes: 1000000000, maxExpansion: 1000000000 });
+  const s = '[' + Array(50000).fill('1').join(',') + ']';
+  const t0 = Date.now();
+  const r = perf.parse(s);
+  const ms = Date.now() - t0;
+  assert(r.ok, 'large flow seq (50000 items) parses');
+  assert(r.result.length === 50000, 'flow seq keeps all items');
+  assert(ms < 3000, 'flow seq parses in linear time (was O(n²) remainder slicing) — ' + ms + 'ms');
+}
+// ── Regression: anchored sub-blocks are not triple-charged against maxNodes ──
+// (1000 `key: &a` anchors each with a nested mapping = ~3 real nodes each;
+//  previously each anchored value was tracked 3×, tripping a false
+//  "possible bomb" at the default maxNodes=10000.)
+{
+  let s = '';
+  for (let i = 0; i < 1000; i++) s += 'a' + i + ': &a' + i + '\n  k: v\n';
+  s += 'use: *a999\n';
+  const r = p.parse(s);
+  assert(r.ok, '1000 anchored sub-blocks parse without a false "possible bomb"');
+  assert(Object.keys(r.result).length === 1001, 'anchored doc keeps all keys');
+}
+
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

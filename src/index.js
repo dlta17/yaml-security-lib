@@ -827,6 +827,77 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
     return s.length;
   }
 
+  // Offset-aware scanFlowItemEnd: returns the absolute index of the item
+  // terminator starting at `start`, so callers can slice only the item instead
+  // of the whole remaining string (keeps flow parsing linear).
+  function scanFlowItemEndAt(s, start) {
+    let quote = null;
+    let depth = 0;
+    for (let i = start; i < s.length; i++) {
+      const ch = s[i];
+      if (quote) {
+        if (quote === '"') {
+          if (ch === '\\') { i++; continue; }
+          if (ch === '"') quote = null;
+        } else {
+          if (ch === "'" && s[i + 1] === "'") { i++; continue; }
+          if (ch === "'") quote = null;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        if (i === start || /[\s,:\[\]{]/.test(s[i - 1])) quote = ch;
+        continue;
+      }
+      if (ch === '#' && (i === start || /[\s\n]/.test(s[i - 1]))) {
+        while (i < s.length && s[i] !== '\n') i++;
+        continue;
+      }
+      if (ch === '[' || ch === '{') { depth++; continue; }
+      if (ch === ']' || ch === '}') { if (depth === 0) return i; depth--; continue; }
+      if (ch === ',') { if (depth === 0) return i; continue; }
+    }
+    return s.length;
+  }
+
+  // Offset-aware flowKeySep: absolute index of the first `:` key separator at
+  // flow depth 0 starting at `start`, or -1 (avoids slicing the remainder).
+  function flowKeySepAt(s, start) {
+    let quote = null;
+    let depth = 0;
+    for (let i = start; i < s.length; i++) {
+      const ch = s[i];
+      if (quote) {
+        if (quote === '"') {
+          if (ch === '\\') { i++; continue; }
+          if (ch === '"') quote = null;
+        } else {
+          if (ch === "'" && s[i + 1] === "'") { i++; continue; }
+          if (ch === "'") quote = null;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        if (i === start || /[\s,:\[\]{]/.test(s[i - 1])) quote = ch;
+        continue;
+      }
+      if (ch === '#' && (i === start || /[\s\n]/.test(s[i - 1]))) {
+        while (i < s.length && s[i] !== '\n') i++;
+        continue;
+      }
+      if (ch === '[' || ch === '{') { depth++; continue; }
+      if (ch === ']' || ch === '}') { if (depth === 0) return -1; depth--; continue; }
+      if (ch === ',') { if (depth === 0) return -1; continue; }
+      if (ch === ':' && depth === 0) {
+        if (i + 1 >= s.length || s[i + 1] === ' ' || s[i + 1] === '\t' || s[i + 1] === '\n' || s[i + 1] === '\r' || s[i + 1] === '}' || s[i + 1] === ']' || s[i + 1] === ',')
+          return i;
+        if (s[i - 1] === '"' || s[i - 1] === "'" || s[i - 1] === ']' || s[i - 1] === '}')
+          return i;
+      }
+    }
+    return -1;
+  }
+
   // Build a YAMLException carrying the current line/column plus a source
   // snippet of the offending line (used for the `mark` on errors).
   function err(msg, col) {
@@ -1126,7 +1197,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
           if (/^[ \t]*$/.test(before))
             throw new YAMLException('YAML: missed comma between flow collection entries');
         }
-        const sub = s.slice(i);
+        const itemEnd = scanFlowItemEndAt(s, i);
+        const sub = s.slice(i, itemEnd);
         if (itemStart < 0) itemStart = i;
         if (/^\?([ \t]|$)/.test(sub)) {
           // Explicit key (`? foo\n bar : baz`): gather the item to its
@@ -1188,7 +1260,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
           while (i < s.length && s[i] !== '\n') i++;
           continue;
         }
-        if (needComma && findKeySep(s.slice(i)) >= 0)
+        if (needComma && findKeySep(s, i) >= 0)
           throw new YAMLException('YAML: missing separating comma in flow mapping');
         if (s.startsWith('---', i) || s.startsWith('...', i)) {
           const prevNL = s.lastIndexOf('\n', i - 1);
@@ -1224,9 +1296,9 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
           aScalar(astScalarString(s.slice(i, close + 1)), quote === '"' ? AST_DOUBLE : AST_SINGLE);
           i = close + 1;
         } else {
-          const fks = flowKeySep(s.slice(i));
+          const fks = flowKeySepAt(s, i);
           let j;
-          if (fks >= 0) j = i + fks;
+          if (fks >= 0) j = fks;
           else { j = i; while (j < s.length && s[j] !== ',' && s[j] !== '}') j++; }
           let rawKeyTok = s.slice(i, j).trim();
           if (/^\?[ \t\n\r]*$/.test(rawKeyTok)) rawKeyTok = '';
@@ -1300,7 +1372,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
           needComma = true;
           continue;
         }
-        const r = parseInlineFlow(s.slice(i), _flowDepth + 1, _line, true);
+        const r = parseInlineFlow(s.slice(i, scanFlowItemEndAt(s, i)), _flowDepth + 1, _line, true);
         const val = r.value;
         if (typeof val === 'string' && val.startsWith('&')) {
           const aname = val.slice(1).split(/[ ,\]}]/)[0];
@@ -1646,6 +1718,59 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
     return depth <= 0;
   }
 
+  // Incremental equivalent of `flowClosed`: processes a flow fragment line by
+  // line (chunk by chunk) without re-scanning the accumulated text. Tracks the
+  // open quote/bracket state across chunks so multi-line flow gathering stays
+  // linear in the input size instead of quadratic.
+  function makeFlowTracker(initial) {
+    let quote = null;
+    let depth = 0;
+    let closed = false;
+    let skipNext = 0;      // 1 = next chunk's first char is escaped (trailing `\`)
+    let quotePair = false; // previous chunk ended with `'` inside a single quote
+    const push = (chunk) => {
+      if (closed) return;
+      let k = 0;
+      if (skipNext) { skipNext = 0; k = 1; }
+      if (quotePair) {
+        quotePair = false;
+        if (chunk[0] === "'") { k = 1; } else { quote = null; }
+      }
+      for (; k < chunk.length; k++) {
+        const ch = chunk[k];
+        if (quote) {
+          if (quote === '"') {
+            if (ch === '\\') {
+              if (k + 1 >= chunk.length) { skipNext = 1; break; }
+              k++;
+              continue;
+            }
+            if (ch === '"') { quote = null; continue; }
+          } else {
+            if (ch === "'") {
+              if (k + 1 >= chunk.length) { quotePair = true; break; }
+              if (chunk[k + 1] === "'") { k++; continue; }
+              quote = null; continue;
+            }
+          }
+          continue;
+        }
+        if (ch === '"' || ch === "'") { quote = ch; continue; }
+        if (ch === '[' || ch === '{') { depth++; continue; }
+        if (ch === ']' || ch === '}') { depth--; if (depth < 0) { closed = true; return; } continue; }
+      }
+    };
+    if (initial !== undefined) push(initial);
+    return {
+      push,
+      closed() {
+        if (closed) return true;
+        if (quote || quotePair) return false;
+        return depth <= 0;
+      }
+    };
+  }
+
   /**
    * Index just past the closing quote/bracket of a complete quoted scalar or
    * flow collection that starts at `s[0]`, or -1 when `s` does not begin with
@@ -1681,13 +1806,14 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
   function gatherFlowValue(valStr, ls, i, keyIndent) {
     let joined = valStr;
     let idx = i + 1;
-    while (idx < ls.length && !flowClosed(joined)) {
+    const tr = makeFlowTracker(valStr);
+    while (idx < ls.length && !tr.closed()) {
       const l = ls[idx];
       const t = l.trim();
-      if (t === '') { joined += '\n' + l; idx++; continue; }
+      if (t === '') { joined += '\n' + l; tr.push('\n' + l); idx++; continue; }
       let lindent = 0;
       while (lindent < l.length && l[lindent] === ' ') lindent++;
-      if (lindent > keyIndent) { joined += '\n' + l; idx++; continue; }
+      if (lindent > keyIndent) { joined += '\n' + l; tr.push('\n' + l); idx++; continue; }
       break;
     }
     return { full: joined, next: idx - 1 };
@@ -1771,7 +1897,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
     const line = contentLines[i];
     const trimmed = line.trim();
     if (preFlowOpen !== null) {
-      preFlowOpen = flowClosed(preFlowOpen + '\n' + line) ? null : preFlowOpen + '\n' + line;
+      preFlowOpen.push('\n' + line);
+      if (preFlowOpen.closed()) preFlowOpen = null;
       continue;
     }
     let ind;
@@ -1786,7 +1913,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
       const cidx = findKeySep(line);
       if (cidx >= 0) flowProbe = line.slice(cidx + 1).trim();
       if ((flowProbe.startsWith('"') || flowProbe.startsWith("'") || flowProbe.startsWith('[') || flowProbe.startsWith('{')) && !flowClosed(flowProbe)) {
-        preFlowOpen = flowProbe;
+        preFlowOpen = makeFlowTracker(flowProbe);
         continue;
       }
     }
@@ -1794,6 +1921,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
       if (_anchoring) continue; // guard re-entrancy
       _anchoring = true;
       state._astSuppress = (state._astSuppress || 0) + 1;
+      // The sub-parse below re-parses content the real pass will parse again,
+      // so its node/alias charges must not persist or legitimate documents
+      // near the limits would trip a false "possible bomb". Errors from
+      // safety-limit enforcement still propagate.
+      const producedBefore = state.produced;
+      const aliasBefore = state.aliasHits;
       try {
         const space = trimmed.indexOf(' ');
         const aname = trimmed.slice(1, space);
@@ -1824,7 +1957,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
         // registers the anchor, so a failure here is safe to skip — except for
         // safety-limit errors (anchor bomb / circular alias), which must
         // propagate even from the pre-scan.
-        if (e && /(bomb|limit|circular)/i.test(e.message || '')) { state._astSuppress--; throw e; }
+        if (e && /(bomb|limit|circular)/i.test(e.message || '')) { state._astSuppress--; state.produced = producedBefore; state.aliasHits = aliasBefore; throw e; }
+      } finally {
+        state.produced = producedBefore;
+        state.aliasHits = aliasBefore;
       }
       state._astSuppress--;
       _anchoring = false;
@@ -2530,9 +2666,10 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
             const sub = parseBlock(valueBlockStart, nestedBase, ls, blockDepth + 1, explicitValueMode, blockEnd,
               valueAnchor || bareAnchorName, blockTagName ? (blockTagName.startsWith('!!') ? fullTagName(blockTagName) : expandTag(blockTagName)) : null);
             addKey(key);
-            if (valueAnchor) setAnchor(valueAnchor, track(sub));
-            if (bareAnchorName) setAnchor(bareAnchorName, track(sub));
-            safeAssign(result, key, track(sub));
+            const tracked = track(sub);
+            if (valueAnchor) setAnchor(valueAnchor, tracked);
+            if (bareAnchorName) setAnchor(bareAnchorName, tracked);
+            safeAssign(result, key, tracked);
             i = blockEnd - 1;
           }
         } else {
@@ -3795,7 +3932,7 @@ function expandTagTop(rawTag, tagMap) {
  * @param {object} tagMap
  * @returns {*}
  */
-function resolveScalarTop(s, schema, tagMap) {
+  function resolveScalarTop(s, schema, tagMap) {
   const trimmed = s.replace(/[ \t]#[^\n]*$/, '').trim();
   const tagMatch = trimmed.match(/^(![^\s]+)/);
   if (tagMatch) {
@@ -3823,6 +3960,58 @@ function resolveScalarTop(s, schema, tagMap) {
     }
   }
   return val;
+}
+
+// Incremental equivalent of the streaming flow-balance check: same state
+// machine, fed chunk by chunk so multi-line flow gathering stays linear.
+// Comments (`#` to end of line) are honored and a closing bracket past
+// depth 0 permanently marks the flow as unbalanced (never closed).
+function makeStreamFlowTracker(initial) {
+  let inS = false, inD = false, esc = false;
+  let depth = 0;
+  let failed = false;
+  let inComment = false;
+  const push = (chunk) => {
+    if (failed) return;
+    let k = 0;
+    if (inComment) {
+      if (chunk[0] === '\n') k = 1;
+      inComment = false;
+    }
+    for (; k < chunk.length; k++) {
+      const ch = chunk[k];
+      if (inD) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inD = false;
+        continue;
+      }
+      if (inS) {
+        if (ch === "'" && chunk[k + 1] === "'") { k++; continue; }
+        if (ch === "'") inS = false;
+        continue;
+      }
+      if (ch === '"') { inD = true; continue; }
+      if (ch === "'") { inS = true; continue; }
+      if (ch === '#' && (k === 0 || chunk[k - 1] === ' ' || chunk[k - 1] === '\t' || chunk[k - 1] === '\n')) {
+        inComment = true;
+        break;
+      }
+      if (ch === '[' || ch === '{') depth++;
+      else if (ch === ']' || ch === '}') {
+        depth--;
+        if (depth < 0) { failed = true; break; }
+      }
+    }
+  };
+  if (initial !== undefined) push(initial);
+  return {
+    push,
+    closed() {
+      if (failed) return false;
+      return depth === 0 && !inS && !inD;
+    }
+  };
 }
 
 /**
@@ -3870,6 +4059,7 @@ class StreamParser {
     this.rootMode = undefined;
     this._rootScalarLines = null;
     this._topFlow = null;
+    this._topFlowTracker = null;
 
     this.anchors = new Map();
     this.anchorDepths = new Map();
@@ -4133,9 +4323,12 @@ class StreamParser {
 
     if (this.rootMode === 'flow' && this._topFlow !== null) {
       const tl = line.trim();
-      if (tl !== '' && !tl.startsWith('#')) this._topFlow += '\n' + tl;
-      if (this._flowBalanced(this._topFlow)) {
-        const t = this._topFlow; this._topFlow = null;
+      if (tl !== '' && !tl.startsWith('#')) {
+        this._topFlow += '\n' + tl;
+        this._topFlowTracker.push('\n' + tl);
+      }
+      if (this._topFlowTracker.closed()) {
+        const t = this._topFlow; this._topFlow = null; this._topFlowTracker = null;
         this._emitFlowRoot(t);
       }
       return;
@@ -4146,9 +4339,12 @@ class StreamParser {
       if (tl !== '') {
         if (this._indentOf(line) < this.pendingFlow.minIndent)
           throw this._err('deficient indentation within a flow collection');
-        if (!tl.startsWith('#')) this.pendingFlow.flow += '\n' + tl;
+        if (!tl.startsWith('#')) {
+          this.pendingFlow.flow += '\n' + tl;
+          this.pendingFlow.tracker.push('\n' + tl);
+        }
       }
-      if (this._flowBalanced(this.pendingFlow.flow)) {
+      if (this.pendingFlow.tracker.closed()) {
         const pf = this.pendingFlow; this.pendingFlow = null;
         this._emitFlow(pf.ctx, pf.flow, pf.anchor);
       }
@@ -4246,7 +4442,11 @@ class StreamParser {
     if (this.rootMode === undefined && this.stack.length === 0 && (trimmed.startsWith('[') || trimmed.startsWith('{'))) {
       this.rootMode = 'flow';
       this._topFlow = trimmed;
-      if (this._flowBalanced(trimmed)) { this._topFlow = null; this._emitFlowRoot(trimmed); }
+      this._topFlowTracker = makeStreamFlowTracker(trimmed);
+      if (this._topFlowTracker.closed()) {
+        this._topFlow = null; this._topFlowTracker = null;
+        this._emitFlowRoot(trimmed);
+      }
       return;
     }
     if (this.rootMode === 'flow') return;
@@ -4525,8 +4725,9 @@ class StreamParser {
       return;
     }
     if (item.startsWith('[') || item.startsWith('{')) {
-      if (!this._flowBalanced(item)) {
-        this.pendingFlow = { ctx: seqCtx, anchor: null, flow: item, minIndent: seqCtx.indent + 1 };
+      const tracker = makeStreamFlowTracker(item);
+      if (!tracker.closed()) {
+        this.pendingFlow = { ctx: seqCtx, anchor: null, flow: item, minIndent: seqCtx.indent + 1, tracker };
         return;
       }
       this._emitFlow(seqCtx, item, null);
@@ -4729,7 +4930,8 @@ class StreamParser {
     } else if (this.rootMode === 'flow') {
       if (this._topFlow !== null) {
         const t = this._topFlow; this._topFlow = null;
-        if (this._flowBalanced(t))
+        const tracker = this._topFlowTracker; this._topFlowTracker = null;
+        if (tracker.closed())
           this._emitFlowRoot(t);
         else
           throw this._err('unexpected end of the stream within a flow ' + (t[0] === '{' ? 'mapping' : 'sequence'));
@@ -4737,7 +4939,7 @@ class StreamParser {
     }
     if (this.pendingFlow !== null) {
       const pf = this.pendingFlow; this.pendingFlow = null;
-      if (this._flowBalanced(pf.flow))
+      if (pf.tracker.closed())
         this._emitFlow(pf.ctx, pf.flow, pf.anchor);
       else
         throw this._err('unexpected end of the stream within a flow ' + (pf.flow[0] === '{' ? 'mapping' : 'sequence'));
@@ -4885,8 +5087,9 @@ class StreamParser {
       return;
     }
     if (rest.startsWith('[') || rest.startsWith('{')) {
-      if (!this._flowBalanced(rest)) {
-        this.pendingFlow = { ctx, anchor, flow: rest, minIndent: (ctx ? ctx.indent : 0) + 1 };
+      const tracker = makeStreamFlowTracker(rest);
+      if (!tracker.closed()) {
+        this.pendingFlow = { ctx, anchor, flow: rest, minIndent: (ctx ? ctx.indent : 0) + 1, tracker };
         return undefined;
       }
       return this._emitFlow(ctx, rest, anchor);
@@ -5017,36 +5220,6 @@ class StreamParser {
   }
 
   // ── Flow parsing ────────────────────────────────────────
-
-  // True when quotes are matched and brackets balanced across `str` (used to
-  // detect complete flow collections that may span several lines).
-  _flowBalanced(str) {
-    let depth = 0;
-    let inS = false, inD = false, esc = false;
-    for (let i = 0; i < str.length; i++) {
-      const ch = str[i];
-      if (inD) {
-        if (esc) esc = false;
-        else if (ch === '\\') esc = true;
-        else if (ch === '"') inD = false;
-        continue;
-      }
-      if (inS) {
-        if (ch === "'" && str[i + 1] === "'") { i++; continue; }
-        if (ch === "'") inS = false;
-        continue;
-      }
-      if (ch === '"') { inD = true; continue; }
-      if (ch === "'") { inS = true; continue; }
-      if (ch === '#' && (i === 0 || str[i - 1] === ' ' || str[i - 1] === '\t' || str[i - 1] === '\n')) {
-        while (i < str.length && str[i] !== '\n') i++;
-        continue;
-      }
-      if (ch === '[' || ch === '{') depth++;
-      else if (ch === ']' || ch === '}') { depth--; if (depth < 0) return false; }
-    }
-    return depth === 0 && !inS && !inD;
-  }
 
   // Return the text after the matching closing bracket of the first flow
   // collection in `str`, or null if not closed (used to validate trailing

@@ -317,6 +317,36 @@ function testClass() {
 }
 testClass();
 
+// ── DoS regression: multiline flow & large flow seq parse in linear time ──
+{
+  const flow = 'a: [\n' + '  x,\n'.repeat(20000) + '  ]';
+  const t0 = Date.now();
+  const s = createStream({ maxNodes: 1000000000, maxInputBytes: 1000000000, maxExpansion: 1000000000 });
+  const docs = [];
+  s.on('document', d => docs.push(d));
+  let threw = null;
+  try { s.write(flow); s.end(); } catch (e) { threw = e; }
+  const ms = Date.now() - t0;
+  if (threw) { fail++; fails.push('stream multiline flow threw: ' + threw.message); }
+  else if (!docs[0] || !Array.isArray(docs[0].a) || docs[0].a.length !== 20000) { fail++; fails.push('stream multiline flow mismatch'); }
+  else pass++;
+  if (ms >= 3000) { fail++; fails.push('stream multiline flow too slow: ' + ms + 'ms'); } else pass++;
+}
+{
+  const s = '[' + Array(50000).fill('1').join(',') + ']';
+  const t0 = Date.now();
+  const st = createStream({ maxNodes: 1000000000, maxInputBytes: 1000000000, maxExpansion: 1000000000 });
+  const docs = [];
+  st.on('document', d => docs.push(d));
+  let threw = null;
+  try { st.write(s); st.end(); } catch (e) { threw = e; }
+  const ms = Date.now() - t0;
+  if (threw) { fail++; fails.push('stream flow seq threw: ' + threw.message); }
+  else if (!docs[0] || !Array.isArray(docs[0]) || docs[0].length !== 50000) { fail++; fails.push('stream flow seq mismatch'); }
+  else pass++;
+  if (ms >= 3000) { fail++; fails.push('stream flow seq too slow: ' + ms + 'ms'); } else pass++;
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fails.length) {
   for (const f of fails) console.log('  FAIL: ' + f);
