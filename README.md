@@ -59,6 +59,7 @@ parser.parse("&a 1\n&b *a\n&c *b\n&d *c\n&e *d\n&f *e\n&g *f\n&h *g\n&i *h\n&j *
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `strict` | `false` | Start from the hardened strict profile instead of the current defaults. See "Strict profile" below |
 | `maxAliasDepth` | `10` | Max anchor indirection depth |
 | `maxAlias` | `100` | Max total alias expansions |
 | `maxDepth` | `50` | Max nesting depth of block collections (mappings + sequences). Flow `[...]`/`{...}` don't count; `0` disables. See "How `maxDepth` is counted" below |
@@ -155,6 +156,38 @@ const p = new YamlSecurity()
 p.parse('x: ' + 'a'.repeat(60000))
 // → { ok: false, error: 'YAML: string length exceeds limit (50000)' }
 ```
+
+### Strict profile (`strict: true`)
+
+Every limit key above can be set individually, but for a one-line hardened setup pass `strict: true`. It swaps the defaults for a tighter preset profile (values in parentheses) while keeping the exact same semantics:
+
+| Limit | Standard default | Strict default |
+|-------|------------------|----------------|
+| `maxNodes` | `10000` | `5000` |
+| `maxAlias` | `100` | `20` |
+| `maxAliasDepth` | `10` | `5` |
+| `maxExpansion` | `100000` | `10000` |
+| `maxInputBytes` / `maxInputMB` | `1048576` / `1` | `1048576` / `1` |
+| `maxStringLength` | `0` (unlimited) | `1048576` (1MB) |
+| `maxKeys` | `0` (unlimited) | `10000` |
+| `maxDepth` | `50` | `30` |
+
+`strict` works everywhere limits are accepted — constructor, `setLimits`, `createStream`, `parseStream`:
+
+```js
+import { YamlSecurity } from 'yaml-security-lib'
+
+// Per-instance hardened profile
+const parser = new YamlSecurity({ strict: true })
+
+// Global hardened profile for all instances
+YamlSecurity.setLimits({ strict: true })
+
+// Streaming
+const stream = createStream({ strict: true })
+```
+
+Explicit limit keys passed alongside `strict` override the profile value (`{ strict: true, maxStringLength: 0 }` re-enables unlimited strings). `setLimits({ strict: false })` resets the global profile back to the standard defaults. A strict instance ignores the current global base — it always starts from the strict profile — so a global `setLimits({ maxDepth: 1000 })` does not loosen an instance created with `{ strict: true }`.
 
 ### `YamlSecurity.setSchema(schema)`
 
@@ -273,6 +306,8 @@ s.write('a: 1\n'); s.end()
 
 for await (const doc of ys.parseStream('x: 1\n---\nx: 2')) { /* ... */ }
 ```
+
+Instance streams inherit the instance's constructor limits (including a `strict` profile); options passed to `createStream`/`parseStream` override them per call.
 
 ### Constructor vs `setLimits`
 
@@ -518,7 +553,7 @@ The inverse of `renderTree`: builds the nested document AST (same node shape as 
 import { getBaseConfig, unescapeYaml, byteLength } from 'yaml-security-lib'
 ```
 
-- `getBaseConfig()` → copy of the current default limits: `{ maxNodes: 10000, maxAlias: 100, maxAliasDepth: 10, maxExpansion: 100000, maxInputMB: 1, maxInputBytes: 1048576, maxStringLength: 0, maxKeys: 0, maxDepth: 50 }` (reflects `setLimits`).
+- `getBaseConfig()` → copy of the current default limits: `{ maxNodes: 10000, maxAlias: 100, maxAliasDepth: 10, maxExpansion: 100000, maxInputMB: 1, maxInputBytes: 1048576, maxStringLength: 0, maxKeys: 0, maxDepth: 50 }` (reflects `setLimits`, including `setLimits({ strict: true })`, which reports the strict profile values).
 - `unescapeYaml(str)` → decode YAML double-quoted escapes (`\n`, `\t`, `\xNN`, `\uNNNN`, `\UNNNNNNNN`, …) into a JS string. Throws `YAMLException` on an unknown escape.
 - `byteLength(str)` → UTF-8 byte length (works in Node and browsers via `Buffer` or `TextEncoder`).
 

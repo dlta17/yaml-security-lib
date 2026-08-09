@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.13.0 (2026-08-10)
+
+### Feature: one-line hardened `strict` preset
+
+- **`strict: true` swaps the defaults for a tighter preset profile** without breaking anyone on the standard defaults. Accepted everywhere limits go — `new YamlSecurity({ strict: true })`, `YamlSecurity.setLimits({ strict: true })`, `createStream({ strict: true })`, `parseStream({ strict: true })`. The strict profile: `maxNodes 5000`, `maxAlias 20`, `maxAliasDepth 5`, `maxExpansion 10000`, `maxInputBytes 1MB`, `maxStringLength 1MB` (was unlimited), `maxKeys 10000` (was unlimited), `maxDepth 30`.
+- **Explicit limit keys override the profile**: `{ strict: true, maxStringLength: 0 }` re-opens strings; other keys keep the strict value.
+- **`setLimits({ strict: true })`** sets the global base to the strict profile (reflected by `getBaseConfig()`); **`setLimits({ strict: false })`** resets it to the standard `DEFAULTS`.
+- **Strict instances ignore the global base.** `new YamlSecurity({ strict: true })` always starts from `STRICT_DEFAULTS`, so a later `setLimits({ maxDepth: 1000 })` cannot loosen it.
+- **Instance streams now inherit the instance's constructor limits** (including `strict`): `YamlSecurity.createStream()` / `parseStream()` forward the instance's `strict` flag and constructor overrides to the underlying `StreamParser`, matching the documented "bound to the instance's schema and limits" contract. Per-call stream options override them.
+- Docs: README "Strict profile" section + `strict` row in the constructor table + instance-stream precedence note + `getBaseConfig` note; `docs/ARCHITECTURE.md` §4.0.
+- Tests: `test/index.js` +21 (profile values, depth/keys/alias/expansion ceilings, overrides, global vs instance semantics), `test/stream.js` +6 (2MB string, depth-40 mapping, instance inheritance, overrides, global strict). Full suite green: 274 + 262 + 157 + 1645 + 406 (YAML Test Suite) + 262 + 95 + 60.
+
 ## 1.12.6 (2026-08-10)
 
 ### Fix: flow gathering is linear-time (batch + stream) + anchor counting

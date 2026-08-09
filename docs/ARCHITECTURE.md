@@ -167,6 +167,21 @@ Every check is enforced identically in both engines.
 | `maxKeys` | 0 (unlimited) | `addKey()` / `_addMapKey()` / flow parsers |
 | `maxDepth` | 50 | `parseBlock` depth guard (block collections only) |
 
+### 4.0 Strict preset
+
+`strict: true` (constructor / `setLimits` / `createStream` / `parseStream`)
+selects `STRICT_DEFAULTS` as the base profile instead of `DEFAULTS` (or the
+current global base): `maxNodes 5000`, `maxAlias 20`, `maxAliasDepth 5`,
+`maxExpansion 10000`, `maxInputMB 1`, `maxStringLength 1 MB`, `maxKeys 10000`,
+`maxDepth 30`. Explicit limit keys passed alongside `strict` still override
+individual values, so `{ strict: true, maxStringLength: 0 }` re-opens strings.
+`setLimits({ strict: true })` sets the global base to `STRICT_DEFAULTS`;
+`setLimits({ strict: false })` resets it to `DEFAULTS`. A strict instance
+(`new YamlSecurity({ strict: true })`) always bases on `STRICT_DEFAULTS`,
+ignoring the global base, so global loosening never leaks into it. Instance
+`createStream()`/`parseStream()` forward the instance's `strict` flag and
+constructor overrides to the underlying `StreamParser`.
+
 ### 4.1 Prototype pollution
 
 `safeAssign(obj, key, value)` refuses `__proto__`, `constructor` and
