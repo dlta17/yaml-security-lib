@@ -15,6 +15,7 @@
 - **Prototype pollution** — `__proto__` / `constructor` / `prototype` blocked
 - **Billion Laughs** — Expansion limit detection
 - **Runaway strings/keys** — `maxStringLength` / `maxKeys` limits (opt-in)
+- **CPU-exhaustion via quadratic parsing** — flow collections (multi-line gathering and single-line item slicing) are linear-time in both the batch and streaming engines, so deep `a: [\n  x,\n …` inputs and huge single-line `[1,2,3,…]` sequences can't stall the parser
 
 Zero dependencies. Works in Node.js ≥16 and all modern browsers.
 
@@ -251,7 +252,7 @@ for await (const doc of parseStream(chunks())) { /* ... */ }
 
 ### Security in streaming mode
 
-All limits (`maxNodes`, `maxDepth`, `maxKeys`, `maxExpansion`, `maxStringLength`, `maxAlias`, `maxAliasDepth`, `maxInputBytes`) are enforced **during** parsing. For example, `maxInputBytes` is checked on every `write()`, and `maxNodes`/`maxKeys` on every node/key seen. `maxDepth` is counted exactly as in the batch parser — see "How `maxDepth` is counted" above; both engines enforce the same limit on the same documents. Alias bombs are bounded by `maxExpansion`/`maxNodes` just like the batch parser: every `*alias` reference charges the full weight of the anchored subtree, so `createStream({ maxExpansion, maxNodes })` stops a bomb even when `maxAlias` is raised.
+All limits (`maxNodes`, `maxDepth`, `maxKeys`, `maxExpansion`, `maxStringLength`, `maxAlias`, `maxAliasDepth`, `maxInputBytes`) are enforced **during** parsing. For example, `maxInputBytes` is checked on every `write()`, and `maxNodes`/`maxKeys` on every node/key seen. `maxDepth` is counted exactly as in the batch parser — see "How `maxDepth` is counted" above; both engines enforce the same limit on the same documents. Alias bombs are bounded by `maxExpansion`/`maxNodes` just like the batch parser: every `*alias` reference charges the full weight of the anchored subtree, so `createStream({ maxExpansion, maxNodes })` stops a bomb even when `maxAlias` is raised. Multi-line flow collections are gathered with an incremental balance tracker, so the stream parser stays linear-time on `a: [\n  x,\n …` inputs (no per-line re-scan of the accumulated flow).
 
 ### Anchors: `buffered` vs `disable`
 

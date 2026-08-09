@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.6 (2026-08-10)
+
+### Fix: flow gathering is linear-time (batch + stream) + anchor counting
+
+- **Multi-line flow collections no longer re-scan the accumulated text.** Both engines previously checked whether an in-progress flow (`[`, `{`) was balanced by re-walking the whole accumulated string on every new line, turning `a: [\n  x,\n  x,\n …` into O(n²) work and hanging on a few thousand lines. The batch parser (`gatherFlowValue` / prescan) and the stream parser now feed each continuation line through an incremental quote/bracket state machine (`makeFlowTracker` / `makeStreamFlowTracker`), so gathering a 200 000-line flow is linear: ~1.5 s instead of tens of seconds.
+- **Single-line flow sequences no longer slice the remainder of the string per item.** `parseInlineFlow` and the offset-aware scanners (`scanFlowItemEndAt`, `flowKeySepAt`) now bound each item to its terminator instead of building `s.slice(i)` for every item, which was O(n²) on a single-line `[1,2,3,…]`. A 1.6 M-item flow sequence now parses in ~10 s.
+- **Anchored block values are counted once, not three times.** The batch parser charged `track(sub)` three times per anchored block value (value anchor + bare anchor name + assignment), so a few hundred `key: &a` sub-blocks tripped a false `expansion limit exceeded (possible bomb)` at the default limits. The pre-scan path also restores its node/alias counters so the anchor-lookup probe no longer inflates the real pass's counts (safety-limit errors still propagate).
+- Tests: `test/index.js` +10 (multiline flow linear, unterminated flow errors fast, flow seq linear, 1000 anchored sub-blocks), `test/stream.js` +4 (stream multiline flow + flow seq linear). Full suite green: 253 + 262 + 151 + 1645 + 406 (YAML Test Suite) + 262 + 95 + 60.
+
 ## 1.12.5 (2026-08-08)
 
 ### Fix: `maxDepth` counting parity between batch and stream (sequence items)

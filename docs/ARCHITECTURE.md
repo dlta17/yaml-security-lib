@@ -220,6 +220,32 @@ Two details keep the counter exact:
   parser (which derives depth from `this.stack.length`, never reset) blocked
   it. Both engines now enforce the same count on the same documents.
 
+### 4.6 Linear-time flow gathering
+
+Both engines detect whether an in-progress flow collection is complete by
+scanning for balanced quotes/brackets. Naively this re-walks the whole
+accumulated flow string on every continuation line (O(n²) on
+`a: [\n  x,\n  x,\n …`). Instead:
+
+- **Batch** (`gatherFlowValue`, the anchor pre-scan) uses `makeFlowTracker(initial)`
+  — an incremental quote/bracket state machine fed one line at a time. It
+  mirrors `flowClosed`: quote state, `''` pairs, a trailing `\` escape across
+  chunks, and depth (a bracket past depth 0 closes the flow).
+- **Stream** uses `makeStreamFlowTracker(initial)`, the incremental equivalent
+  of the old `_flowBalanced` check. It differs in two ways that match the
+  streaming semantics: `#` comments run to end-of-line, and a closing bracket
+  past depth 0 permanently marks the flow as unbalanced (kept open until the
+  document-close error) instead of closing it.
+- **Single-line flow items** avoid `s.slice(i)` per item: `parseInlineFlow` and
+  the offset-aware `scanFlowItemEndAt` / `flowKeySepAt` bound each item to its
+  terminator, keeping a 1.6 M-item single-line `[1,2,3,…]` linear.
+
+The same pass no longer double-counts anchored block values: `track(sub)` runs
+once per anchored value (value anchor, bare anchor name and assignment all
+share the result), and the anchor pre-scan restores its `produced`/`aliasHits`
+counters so its probe of un-registered anchors can't inflate the real pass's
+counts (safety-limit errors still propagate).
+
 ---
 
 ## 5. Schema system
