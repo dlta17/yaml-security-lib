@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.2 (2026-08-10)
+
+### Docs: Quick Start guide — pick the right method fast
+
+- New **"Quick Start — which method should I use?"** section right after Install: a table contrasting `new YamlSecurity().parse()` (recommended, never throws), `parse()` (throws `YAMLException`), `validateYaml()` (parse + schema error report), and `lint()` (style + security rules), all with the same bomb-protection defaults.
+- Includes a recommended Safe-API example, a **drop-in replacement for `js-yaml`** (`yaml.load(str)` → `new YamlSecurity().parse(str)`), a Custom-limits snippet, and a pointer to the `strict` preset.
+- No code changes — docs only.
+
 ## 1.13.1 (2026-08-10)
 
 ### Fix: publish browser bundles (`dist/`) built with the `strict` preset

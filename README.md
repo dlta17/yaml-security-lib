@@ -53,6 +53,64 @@ parser.parse("&a 1\n&b *a\n&c *b\n&d *c\n&e *d\n&f *e\n&g *f\n&h *g\n&i *h\n&j *
 // → { ok: false, error: 'YAML: alias depth exceeds limit (10)' }
 ```
 
+## Quick Start — which method should I use?
+
+```js
+import { YamlSecurity, parse, validateYaml, lint } from 'yaml-security-lib'
+```
+
+| Method | When to use it | Throws? | Bomb protection? |
+|--------|----------------|---------|------------------|
+| `new YamlSecurity().parse()` | **Recommended for any untrusted input** — never throws | No — returns `{ ok, result }` or `{ ok, error }` | Yes |
+| `parse()` | Only when you're sure the YAML is valid, or you want `try/catch` yourself | Yes — throws `YAMLException` | Yes |
+| `validateYaml()` | Parse + a structured schema error report (`{ ok, value, errors }`) | No | Yes |
+| `lint()` | Inspect a string/file for style + security issues without needing the parsed value | No — returns `{ valid, issues }` | Yes (rules) |
+
+For any input you didn't write yourself, use the `YamlSecurity` class: it never throws, always answers `{ ok, result }` or `{ ok, error }`, and enforces all the security limits by default.
+
+### Safe API (recommended)
+
+```js
+const parser = new YamlSecurity()
+
+const result = parser.parse(untrustedYaml)
+
+if (!result.ok) {
+  console.error('Rejected:', result.error)
+  // handle the rejection safely
+} else {
+  console.log(result.result)
+}
+```
+
+### Drop-in replacement for js-yaml
+
+```js
+// Before
+import yaml from 'js-yaml'
+const data = yaml.load(str)
+
+// After (safe)
+import { YamlSecurity } from 'yaml-security-lib'
+const parser = new YamlSecurity()
+const { ok, result, error } = parser.parse(str)
+if (!ok) throw new Error(error)
+const data = result
+```
+
+### Custom limits (optional)
+
+```js
+const parser = new YamlSecurity({
+  maxNodes: 5000,       // default 10000
+  maxAliasDepth: 8,     // default 10
+  maxDepth: 40,         // default 50
+  maxExpansion: 50000,  // default 100000
+})
+```
+
+Want untrusted input locked down in one line? Pass `strict: true` instead — see [Strict profile](#strict-profile-strict-true).
+
 ## API
 
 ### `new YamlSecurity(opts?)`
