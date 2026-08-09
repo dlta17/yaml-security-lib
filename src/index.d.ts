@@ -5,6 +5,8 @@ export class YAMLException extends Error {
 }
 
 export interface YamlSecurityOptions {
+  /** Start from the hardened STRICT_DEFAULTS profile instead of the current global defaults. */
+  strict?: boolean;
   maxAliasDepth?: number;
   maxNodes?: number;
   maxExpansion?: number;
@@ -14,6 +16,12 @@ export interface YamlSecurityOptions {
 }
 
 export interface SetLimitsOptions {
+  /**
+   * `true` switches the global profile to STRICT_DEFAULTS (hardened ceilings);
+   * `false` resets it back to the standard defaults. Explicit limit keys
+   * given alongside `strict` override the corresponding profile value.
+   */
+  strict?: boolean;
   maxAliasDepth?: number;
   maxNodes?: number;
   maxAlias?: number;
@@ -212,6 +220,11 @@ export function byteLength(str: string): number;
  * so a malicious document is rejected before the whole input is consumed.
  */
 export interface StreamOptions extends Partial<SetLimitsOptions> {
+  /**
+   * Start from the hardened STRICT_DEFAULTS profile for this stream instead
+   * of the current global defaults.
+   */
+  strict?: boolean;
   /**
    * Anchor handling strategy:
    * - `'buffer'` (default): anchors/aliases are supported; anchor values are

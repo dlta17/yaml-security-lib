@@ -1,4 +1,4 @@
-import { YamlSecurity, parse, parseAll, dump, YAMLException, YamlType, Schema } from '../src/index.js';
+import { YamlSecurity, parse, parseAll, dump, YAMLException, YamlType, Schema, getBaseConfig } from '../src/index.js';
 
 let passed = 0;
 let failed = 0;
@@ -302,6 +302,75 @@ assertThrows(() => new YamlSecurity({ maxNodes: -1 }), 'constructor rejects nega
 assertThrows(() => new YamlSecurity({ maxExpansion: Infinity }), 'constructor rejects Infinity limit');
 assertThrows(() => new YamlSecurity({ maxKeys: 0.5 }), 'constructor rejects float limit');
 assertThrows(() => new YamlSecurity({ maxInputMB: 0 }), 'constructor rejects zero maxInputMB');
+
+// ── Strict preset ──
+const deep40 = (() => {
+  let d = 'x: 1';
+  for (let i = 0; i < 40; i++) d = 'a:\n  ' + d.replace(/\n/g, '\n  ');
+  return d;
+})();
+const bigStr = '"' + 'a'.repeat(2_000_000) + '"';
+{
+  // Default limits (unlimited string length/keys, depth 50) still hold for
+  // non-strict instances with raised input/nodes.
+  const loose = new YamlSecurity({ maxInputBytes: 5_000_000, maxNodes: 1_000_000 });
+  assert(loose.parse('s: ' + bigStr).ok, 'default allows 2MB string');
+  assert(loose.parse(deep40).ok, 'default allows depth-40 mapping');
+
+  // strict: true applies the hardened profile in one line.
+  const strict = new YamlSecurity({ strict: true, maxInputBytes: 5_000_000, maxNodes: 1_000_000 });
+  assert(!strict.parse('s: ' + bigStr).ok, 'strict maxStringLength=1MB blocks 2MB string');
+  assert(strict.parse('s: ' + 'a'.repeat(500_000)).ok, 'strict allows 0.5MB string');
+  assert(!new YamlSecurity({ strict: true }).parse(deep40).ok, 'strict maxDepth=30 blocks depth-40 mapping');
+
+  // strict maxKeys=10000 blocks a 12000-key mapping; default allows it.
+  const keys = Array.from({ length: 12000 }, (_, i) => 'k' + i + ': 1').join('\n');
+  assert(loose.parse(keys).ok, 'default allows 12000-key mapping');
+  const strictKeys = new YamlSecurity({ strict: true, maxNodes: 1_000_000, maxInputBytes: 5_000_000 });
+  assert(!strictKeys.parse(keys).ok, 'strict maxKeys=10000 blocks 12000-key mapping');
+
+  // strict maxAlias=20 / maxAliasDepth=5.
+  const aliases = '&a 1\n' + Array.from({ length: 25 }, (_, i) => 'x' + i + ': *a').join('\n');
+  assert(new YamlSecurity({ strict: true, maxNodes: 100_000 }).parse(aliases).ok === false, 'strict maxAlias=20 blocks 25 aliases');
+  assert(new YamlSecurity({ maxNodes: 100_000 }).parse(aliases).ok, 'default maxAlias=100 allows 25 aliases');
+  const chain7 = '&a hello\n&b *a\n&c *b\n&d *c\n&e *d\n&f *e\n&g *f\nkey: *g';
+  assert(new YamlSecurity({ strict: true }).parse(chain7).ok === false, 'strict maxAliasDepth=5 blocks depth-7 chain');
+  assert(new YamlSecurity().parse(chain7).ok, 'default maxAliasDepth=10 allows depth-7 chain');
+
+  // strict maxExpansion=10000 blocks a modest expansion bomb; default allows it.
+  const bomb = 'a: &x ' + JSON.stringify(Array(200).fill(0)) + '\n'
+    + Array.from({ length: 60 }, (_, i) => 'k' + i + ': *x').join('\n');
+  assert(new YamlSecurity({ strict: true, maxNodes: 1_000_000, maxAlias: 1000 }).parse(bomb).ok === false, 'strict maxExpansion=10000 blocks expansion bomb');
+  assert(new YamlSecurity({ maxNodes: 1_000_000, maxAlias: 1000 }).parse(bomb).ok, 'default maxExpansion=100000 allows expansion bomb');
+
+  // Explicit limits override the strict profile values.
+  const relaxed = new YamlSecurity({ strict: true, maxStringLength: 0, maxInputBytes: 5_000_000, maxNodes: 1_000_000 });
+  assert(relaxed.parse('s: ' + bigStr).ok, 'strict + maxStringLength:0 override');
+
+  // A strict instance ignores the (possibly loosened) global base.
+  YamlSecurity.setLimits({ maxDepth: 1000 });
+  assert(!new YamlSecurity({ strict: true }).parse(deep40).ok, 'strict instance ignores loosened global base');
+  YamlSecurity.setLimits(); // reset
+}
+
+// ── setLimits strict ──
+{
+  const STRICT_PROFILE = {
+    maxNodes: 5000, maxAlias: 20, maxAliasDepth: 5, maxExpansion: 10000,
+    maxInputMB: 1, maxInputBytes: 1048576, maxStringLength: 1048576,
+    maxKeys: 10000, maxDepth: 30,
+  };
+  YamlSecurity.setLimits({ strict: true });
+  assertEqual(getBaseConfig(), STRICT_PROFILE, 'setLimits({strict:true}) applies STRICT_DEFAULTS');
+  assert(!new YamlSecurity().parse(deep40).ok, 'global strict blocks depth-40');
+  YamlSecurity.setLimits({ strict: false });
+  assertEqual(getBaseConfig(), { ...STRICT_PROFILE, maxStringLength: 0, maxKeys: 0, maxDepth: 50, maxNodes: 10000, maxAlias: 100, maxAliasDepth: 10, maxExpansion: 100000 }, 'setLimits({strict:false}) resets to standard defaults');
+  assert(new YamlSecurity().parse(deep40).ok, 'global reset allows depth-40 again');
+  YamlSecurity.setLimits({ strict: true, maxDepth: 1000 });
+  assert(new YamlSecurity().parse(deep40).ok, 'global strict + maxDepth override');
+  assertEqual(getBaseConfig().maxStringLength, 1048576, 'other strict values kept alongside override');
+  YamlSecurity.setLimits(); // reset
+}
 // Unknown constructor keys are ignored
 assert(p.parse('a: 1').ok, 'p still usable after constructor tests');
 

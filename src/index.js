@@ -29,6 +29,22 @@ const DEFAULTS = {
   maxDepth: 50,               // max nesting depth in block mappings
 };
 
+// Opt-in hardened profile applied when `strict: true` is passed to
+// setLimits / new YamlSecurity({...}) / createStream({...}). Tighter node,
+// expansion, alias and nesting ceilings plus per-string/key bounds. Explicit
+// limits given alongside `strict: true` override individual values.
+const STRICT_DEFAULTS = {
+  maxNodes: 5_000,
+  maxAlias: 20,
+  maxAliasDepth: 5,
+  maxExpansion: 10_000,
+  maxInputMB: 1,
+  maxInputBytes: 1_048_576,   // 1MB
+  maxStringLength: 1_048_576, // 1MB per string (0 = unlimited in DEFAULT)
+  maxKeys: 10_000,            // 0 = unlimited in DEFAULT
+  maxDepth: 30,               // max nesting depth in block mappings
+};
+
 let _baseCfg = { ...DEFAULTS };
 
 // Limit keys that must be positive integers (0 is not allowed).
@@ -70,11 +86,18 @@ function normalizeLimits(opts, label) {
 /**
  * Globally adjust parser limits for all instances.
  * Call with no arguments (or `{}`) to reset to defaults.
- * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number}} [opts]
+ * Pass `strict: true` to switch to the hardened STRICT_DEFAULTS profile;
+ * pass `strict: false` to reset back to the standard defaults. Explicit
+ * limit keys given alongside `strict` override the corresponding value.
+ * @param {{strict?: boolean, maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number}} [opts]
  */
 export function setLimits(opts) {
   if (!opts || Object.keys(opts).length === 0) { _baseCfg = { ...DEFAULTS }; return; }
-  _baseCfg = { ..._baseCfg, ...normalizeLimits(opts, 'setLimits') };
+  const { strict, ...rest } = opts;
+  let base = _baseCfg;
+  if (strict === true) base = { ...STRICT_DEFAULTS };
+  else if (strict === false) base = { ...DEFAULTS };
+  _baseCfg = { ...base, ...normalizeLimits(rest, 'setLimits') };
 }
 
 // ── Custom Error ─────────────────────────────────────────
@@ -3536,11 +3559,14 @@ export function validateYaml(yamlStr, spec, opts = {}) {
  */
 export class YamlSecurity {
   /**
-   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number}} [opts]
+   * @param {{strict?: boolean, maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number}} [opts]
    *   Per-instance security limits, validated and normalized with the same
    *   rules as setLimits (unknown keys are ignored, invalid values throw).
+   *   Pass `strict: true` to start from the hardened STRICT_DEFAULTS profile
+   *   instead of the current global defaults.
    */
   constructor(opts) {
+    this._strict = !!(opts && opts.strict === true);
     this._overrides = normalizeLimits(opts, 'YamlSecurity');
     this._schema = DEFAULT_SCHEMA;
   }
@@ -3556,11 +3582,14 @@ export class YamlSecurity {
     this._schema = schema;
   }
 
-  // Merge the global base limits with this instance's constructor overrides.
-  // The overrides were validated and normalized (maxInputMB already folded into
-  // maxInputBytes) at construction time, so a plain spread is enough.
+  // Merge the instance's base profile with its constructor overrides. A strict
+  // instance starts from STRICT_DEFAULTS and ignores the global base; otherwise
+  // it inherits the current global defaults. The overrides were validated and
+  // normalized (maxInputMB already folded into maxInputBytes) at construction
+  // time, so a plain spread is enough.
   _getCfg() {
-    return { ..._baseCfg, ...this._overrides };
+    const base = this._strict ? { ...STRICT_DEFAULTS } : { ..._baseCfg };
+    return { ...base, ...this._overrides };
   }
 
   /**
@@ -3681,11 +3710,11 @@ export class YamlSecurity {
 
   /**
    * Create a SAX-style streaming YAML parser bound to this instance's schema.
-   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', validate?: any, abortOnError?: boolean}} [opts]
+   * @param {{strict?: boolean, maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', validate?: any, abortOnError?: boolean}} [opts]
    * @returns {StreamParser}
    */
   createStream(opts) {
-    return createStream(Object.assign({}, opts, { schema: this._schema }));
+    return createStream(Object.assign({}, { strict: this._strict }, this._overrides, opts, { schema: this._schema }));
   }
 
   /**
@@ -3693,11 +3722,11 @@ export class YamlSecurity {
    * any (async) iterable of chunks and yields each document as it completes.
    * When `opts.validate` is set, yields `{ value, errors }` per document.
    * @param {string|Iterable<string>|AsyncIterable<string>} input
-   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', validate?: any, abortOnError?: boolean}} [opts]
+   * @param {{strict?: boolean, maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', validate?: any, abortOnError?: boolean}} [opts]
    * @yields {*}
    */
   parseStream(input, opts) {
-    return parseStream(input, Object.assign({}, opts, { schema: this._schema }));
+    return parseStream(input, Object.assign({}, { strict: this._strict }, this._overrides, opts, { schema: this._schema }));
   }
 }
 
@@ -4032,11 +4061,12 @@ function makeStreamFlowTracker(initial) {
  */
 class StreamParser {
   /**
-   * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', schema?: Schema, validate?: any, abortOnError?: boolean}} [opts]
+   * @param {{strict?: boolean, maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', schema?: Schema, validate?: any, abortOnError?: boolean}} [opts]
    */
   constructor(opts = {}) {
-    const cfg = getBaseConfig();
-    Object.assign(cfg, normalizeLimits(opts, 'createStream'));
+    const { strict, ...rest } = opts;
+    const cfg = strict === true ? { ...STRICT_DEFAULTS } : getBaseConfig();
+    Object.assign(cfg, normalizeLimits(rest, 'createStream'));
     this.cfg = cfg;
     this.schema = opts.schema instanceof Schema ? opts.schema : DEFAULT_SCHEMA;
     this.anchorMode = opts.anchors === 'disable' ? 'disable' : 'buffer';
@@ -5638,7 +5668,7 @@ export function createStream(opts = {}) {
  * streaming, so a malicious document is rejected before the whole input
  * is consumed.
  * @param {string|Iterable<string>|AsyncIterable<string>} input
- * @param {{maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', schema?: Schema}} [opts]
+ * @param {{strict?: boolean, maxNodes?: number, maxAlias?: number, maxAliasDepth?: number, maxExpansion?: number, maxInputMB?: number, maxInputBytes?: number, maxStringLength?: number, maxKeys?: number, maxDepth?: number, anchors?: 'buffer'|'disable', schema?: Schema}} [opts]
  * @yields {*} Parsed document
  */
 export async function* parseStream(input, opts = {}) {

@@ -317,6 +317,51 @@ function testClass() {
 }
 testClass();
 
+function testStrict() {
+  const bigStr = '"' + 'a'.repeat(2_000_000) + '"';
+  // Default maxStringLength is unlimited: 2MB string passes with raised input.
+  const allow = createStream({ maxInputBytes: 5_000_000, maxNodes: 1_000_000 });
+  let allowThrew = false;
+  try { allow.write('s: ' + bigStr + '\n'); allow.end(); } catch (e) { allowThrew = true; }
+  if (allowThrew) { fail++; fails.push('default stream allows 2MB string'); } else pass++;
+
+  // strict maxStringLength=1MB enforced while streaming.
+  const str = createStream({ strict: true, maxInputBytes: 5_000_000, maxNodes: 1_000_000 });
+  let threw = false;
+  try { str.write('s: ' + bigStr + '\n'); str.end(); } catch (e) { threw = true; }
+  if (!threw) { fail++; fails.push('strict stream maxStringLength=1MB not enforced'); } else pass++;
+
+  // strict maxDepth=30 blocks a depth-40 mapping.
+  let deep = 'x: 1';
+  for (let i = 0; i < 40; i++) deep = 'a:\n  ' + deep.replace(/\n/g, '\n  ');
+  const sDeep = createStream({ strict: true, maxNodes: 1_000_000 });
+  let threw2 = false;
+  try { sDeep.write(deep + '\n'); sDeep.end(); } catch (e) { threw2 = true; }
+  if (!threw2) { fail++; fails.push('strict stream maxDepth=30 not enforced'); } else pass++;
+
+  // Strict instance limits carry over to instance streams.
+  const ys = new YamlSecurity({ strict: true, maxInputBytes: 5_000_000, maxNodes: 1_000_000 });
+  const inst = ys.createStream();
+  let threw3 = false;
+  try { inst.write('s: ' + bigStr + '\n'); inst.end(); } catch (e) { threw3 = true; }
+  if (!threw3) { fail++; fails.push('strict instance createStream does not inherit limits'); } else pass++;
+
+  // Explicit limits override the strict profile.
+  const over = createStream({ strict: true, maxStringLength: 0, maxInputBytes: 5_000_000, maxNodes: 1_000_000 });
+  let overThrew = false;
+  try { over.write('s: ' + bigStr + '\n'); over.end(); } catch (e) { overThrew = true; }
+  if (overThrew) { fail++; fails.push('strict + maxStringLength:0 override ignored'); } else pass++;
+
+  // Standalone streams inherit the strict global profile set via setLimits.
+  YamlSecurity.setLimits({ strict: true });
+  const after = createStream({ maxInputBytes: 5_000_000, maxNodes: 1_000_000 });
+  let afterThrew = false;
+  try { after.write('s: ' + bigStr + '\n'); after.end(); } catch (e) { afterThrew = true; }
+  if (!afterThrew) { fail++; fails.push('createStream should inherit strict global profile'); } else pass++;
+  YamlSecurity.setLimits(); // reset
+}
+testStrict();
+
 // ── DoS regression: multiline flow & large flow seq parse in linear time ──
 {
   const flow = 'a: [\n' + '  x,\n'.repeat(20000) + '  ]';
