@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.1 (2026-08-10)
+
+### Fix: publish browser bundles (`dist/`) built with the `strict` preset
+
+- **`dist/yaml-security.mjs` and `dist/yaml-security.min.js` shipped stale.** The browser bundles are produced by `build:browser`, which was **not** part of `prepack` (only `build:cjs` + `build:esm` ran on publish), so `v1.13.0`'s tarball contained the old `v1.12.6` browser builds without `strict`. The Node entry points (`src/index.min.js` for `import`, `src/index.cjs` via `index.cjs` for `require`) were built fresh and did contain the preset — the regression only affected consumers pulling the `dist/` bundles.
+- **Root cause fixed:** `prepack` now runs `build:browser` too, so every publish rebuilds all entry points (CJS, Node ESM, browser IIFE/ESM) from the current source.
+- No source change; the browser bundles were rebuilt from the same `src/index.js` as `v1.13.0`. Verified the published `dist/` files contain the `strict` preset logic.
+
 ## 1.13.0 (2026-08-10)
 
 ### Feature: one-line hardened `strict` preset
