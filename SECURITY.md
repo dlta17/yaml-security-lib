@@ -27,3 +27,4 @@ confirmed, a fix will be released as soon as possible.
 - **Alias expansion limit** — Limits total alias resolutions (default: 100)
 - **Recursion guard** — Limits YAML parser recursion depth (50 max)
 - **Input size limit** — Rejects inputs larger than 1MB by default
+- **Linter security rules** — `lint()` flags code-execution tags (`!!js/function`, `!!python/object`, …) and invisible/bidi control characters used in trojan-source attacks

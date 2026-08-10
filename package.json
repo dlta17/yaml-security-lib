@@ -1,6 +1,6 @@
 {
   "name": "yaml-security-lib",
-  "version": "1.16.0",
+  "version": "1.17.0",
   "description": "Secure YAML parser — duplicate key detection, alias depth limiting, prototype pollution prevention",
   "main": "index.cjs",
   "types": "src/index.d.ts",
@@ -56,6 +56,7 @@
     "lint": "node bin/yaml-lint.js examples/basic.yaml",
     "prepack": "npm run build:cjs && npm run build:esm && npm run build:browser",
     "example": "node examples/basic.js",
+    "bench": "node bench/benchmark.js",
     "build": "npm run build:cjs && npm run build:esm && npm run build:browser",
     "build:cjs": "rollup -c --environment FORMAT:cjs",
     "build:esm": "rollup -c --environment FORMAT:esm",
@@ -86,6 +87,7 @@
     "@rollup/plugin-terser": "^1.0.0",
     "js-yaml": "^5.2.3",
     "rollup": "^4.62.3",
-    "typescript": "^5.6.2"
+    "typescript": "^5.6.2",
+    "yaml": "^2.9.0"
   }
 }
