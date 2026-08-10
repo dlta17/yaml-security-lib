@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // yaml-lint — CLI linter for yaml-security-lib.
+// Imports the committed ES module source (src/index.js), not a build artifact,
+// so it works from a fresh checkout / CI before any build step and from the
+// published package (src/index.js ships in the tarball).
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { lint } from '../src/index.min.js';
+import { lint } from '../src/index.js';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
@@ -89,6 +92,7 @@ async function main() {
     } catch (err) {
       process.stderr.write('yaml-lint: cannot read ' + name + ': ' + err.message + '\n');
       ioError = true;
+      results.push({ file: name, error: err.message });
       continue;
     }
     const lintOptions = {};
@@ -96,20 +100,23 @@ async function main() {
     results.push({ file: name, ...lint(yaml, lintOptions) });
   }
 
-  const totalErrors = results.reduce((n, r) => n + r.errors, 0);
-  const totalWarnings = results.reduce((n, r) => n + r.warnings, 0);
+  const unreadable = results.filter(r => r.error).length;
+  const totalErrors = results.reduce((n, r) => n + (r.errors || 0), 0);
+  const totalWarnings = results.reduce((n, r) => n + (r.warnings || 0), 0);
 
   if (opts.json) {
-    process.stdout.write(JSON.stringify({ files: results, errors: totalErrors, warnings: totalWarnings }, null, 2) + '\n');
+    const out = { files: results, errors: totalErrors, warnings: totalWarnings };
+    if (unreadable) out.unreadable = unreadable;
+    process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } else {
     for (const r of results) {
+      if (r.error) continue;
       for (const issue of r.issues) process.stdout.write(renderIssue(r.file, issue) + '\n');
     }
-    if (results.length > 1 || targets.length === 1) {
-      process.stdout.write('Linted ' + targets.length + ' source' + (targets.length === 1 ? '' : 's') +
-        ': ' + totalErrors + ' error' + (totalErrors === 1 ? '' : 's') + ', ' +
-        totalWarnings + ' warning' + (totalWarnings === 1 ? '' : 's') + '\n');
-    }
+    process.stdout.write('Linted ' + targets.length + ' source' + (targets.length === 1 ? '' : 's') +
+      ': ' + totalErrors + ' error' + (totalErrors === 1 ? '' : 's') + ', ' +
+      totalWarnings + ' warning' + (totalWarnings === 1 ? '' : 's') +
+      (unreadable ? ' (' + unreadable + ' could not be read)' : '') + '\n');
   }
 
   process.exit(ioError ? 2 : totalErrors > 0 ? 1 : 0);
