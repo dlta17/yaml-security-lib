@@ -17,11 +17,33 @@
 - **Runaway strings/keys** — `maxStringLength` / `maxKeys` limits (opt-in)
 - **CPU-exhaustion via quadratic parsing** — flow collections (multi-line gathering and single-line item slicing) are linear-time in both the batch and streaming engines, so deep `a: [\n  x,\n …` inputs and huge single-line `[1,2,3,…]` sequences can't stall the parser
 
-Zero dependencies. Works in Node.js ≥16 and all modern browsers.
+Zero dependencies. Works in Node.js ≥16 (CI-tested on 16, 18, 20 and 22) and all modern browsers.
 
 > **For contributors / maintainers:** see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a
 > deep dive into the two parsing engines (batch + streaming), the security model, and a
 > code map of the single-file core (`src/index.js`).
+
+## Why yaml-security-lib?
+
+Checks were verified on the current generators (Node 24, 2026-08) — `js-yaml@4` and `eemeli/yaml`. "Own key" means the parser stores the key as a plain data key on a null-prototype object, so it does not mutate `Object.prototype`.
+
+| Capability | yaml-security-lib | js-yaml v4 | eemeli `yaml` |
+|------------|:---:|:---:|:---:|
+| Duplicate key detection | ✔ in every path (streams, quoted keys, merges) | ✔ default `load()` | ✔ `parse()` errors |
+| Prototype-pollution keys (`__proto__` / `constructor` / `prototype`) | ✔ **rejected** | own key (no pollution) | own key (no pollution) |
+| Alias depth / expansion caps (`maxAliasDepth`, `maxExpansion`, strict preset) | ✔ **default on** | ✖ | partial (`maxAliasCount`) |
+| Alias graph bomb (384 B input → ~780 k aliased nodes) | ✔ rejected in ~10 ms | parsed (shared refs) | rejected in ~40 ms |
+| Node-count / input-size guards (`maxNodes`, `maxInputBytes`, `maxStringLength`, `maxKeys`) | ✔ **default on** | ✖ | ✖ |
+| Deep nesting | ✔ iterative (no stack overflow) | recursion (`RangeError` on deep docs) | recursion |
+| Wide mappings (10 k distinct keys) | ✔ capped — refuses past 10 k nodes | linear (~310 ms) | quadratic (~23 s) |
+| Never-throw safe API `{ ok, result }` / `{ ok, error }` | ✔ | ✖ throws | ✖ throws |
+| Streaming event API (`createStream` / `parseStream`) | ✔ | ✖ | ✖ |
+| Schema validation | ✔ `validateYaml` + `s.*` toolkit | ⚠ typed value schemas | ⚠ custom tags only |
+| Linter with security rules | ✔ 14 rules | ✖ | ✖ |
+| Zero runtime dependencies | ✔ | ✔ | ✔ |
+| Browser bundles + per-subpath TypeScript types | ✔ | ✖ | ⚠ |
+
+The headline difference is **default-on resource guards and a never-throw API**: untrusted documents are bounded before they can exhaust memory or the call stack, and the parser answers `{ ok, error }` instead of throwing into your process.
 
 ## Install
 
@@ -772,6 +794,54 @@ The `core` / `validate` / `lint` lean bundles ship as browser builds too, so CDN
 ```
 
 ESM equivalents ship as `dist/core.mjs`, `dist/validate.mjs` and `dist/lint.mjs`.
+
+## Performance & resource bounds
+
+Like any parser that validates as it parses, this one is slower than the fastest bare parser but faster than the full `yaml` package, and it caps cost instead of accepting pathological inputs. Run `npm run bench` to regenerate these numbers (Node 24, 2026-08).
+
+**Throughput** — 2.3 KB Kubernetes-style config, median of 300 iterations:
+
+| Library | median ms/parse | vs fastest |
+|---------|----------------|------------|
+| `yaml-security-lib` `parse()` | 5.69 | 3.6× |
+| `js-yaml` `load()` | 1.58 | 1.0× |
+| `eemeli` `yaml.parse()` | 12.19 | 7.7× |
+
+**Alias graph bomb** — 384 B of input whose aliases expand to ~780 k nodes:
+
+| Library | result | time |
+|---------|--------|------|
+| `yaml-security-lib` | **rejected** (`nodes limit exceeded`) | ~10 ms |
+| `js-yaml` | parsed (aliases are shared references) | ~8 ms |
+| `eemeli` `yaml` | **rejected** (`Excessive alias count`) | ~40 ms |
+
+**Flat mapping bomb** — 10 k distinct keys (~62 KB input), no aliases:
+
+| Library | result | time |
+|---------|--------|------|
+| `yaml-security-lib` | **rejected** past default 10 k-node cap | ~360 ms |
+| `js-yaml` | parsed | ~310 ms |
+| `eemeli` `yaml` | parsed — **quadratic** on wide mappings | ~23.5 s |
+
+The point of the right-hand columns is not speed but **boundedness**: without the 10 k-node / alias / depth / input-size guards, a tiny hostile document can balloon into gigabytes or a hung parser.
+
+## Threat model
+
+`yaml-security-lib` defends against documents that try to exhaust resources or corrupt data:
+
+| Attack | Document shape | Defence |
+|--------|----------------|---------|
+| Billion Laughs | aliases that exponentially multiply | `maxExpansion`, `maxNodes` |
+| Alias bomb | deep anchor chains, circular aliases | `maxAliasDepth`, `maxAlias`, circular detection |
+| Mapping bomb | enormous flat mapping | `maxNodes`, `maxKeys`, `maxInputBytes` |
+| Deep nesting | thousands of nested `[`/`{`/mappings | iterative parser — no recursion crash |
+| Runaway scalar | giant strings | `maxStringLength`, `maxInputBytes` |
+| Duplicate keys | same key twice — K8s/GitLab privilege escalation | blocked in every parse path |
+| Prototype pollution | `__proto__` / `constructor` / `prototype` keys | rejected |
+| Hidden/bidi text | invisible control characters in config values | `lint()` `hidden-character` rule |
+| Code-execution tags | `!!js/function`, `!!python/object`, … | `lint()` `unsafe-tag` rule |
+
+The `strict` profile raises the defaults (`maxNodes` 5000, `maxAlias` 20, `maxAliasDepth` 5, `maxKeys` 10000, `maxStringLength` 1 MB, `maxDepth` 30) for high-security environments; the ordinary defaults already reject the bombs above.
 
 ## License
 

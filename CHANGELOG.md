@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.17.0 (2026-08-10)
+
+### Docs & tooling: comparison, honest benchmarks, threat model, verified Node range
+
+- **New README "Why yaml-security-lib?"** — capability comparison vs `js-yaml@4` and `eemeli/yaml`. Every claim was verified empirically (Node 24, 2026-08), including corrections to common assumptions: current js-yaml *does* detect plain duplicate keys, and both js-yaml and eemeli store `__proto__` as an own data key (on null-prototype objects) rather than polluting. The clear differentiators are **default-on resource guards** (`maxNodes`, `maxExpansion`, `maxAliasDepth`, input-size), **iterative (no-recursion) parsing**, the **never-throw `{ ok, error }` API**, streaming, the schema toolkit, and the linter.
+- **New `bench/benchmark.js` + `npm run bench`** — reproducible 3-way benchmark (ours vs js-yaml vs eemeli `yaml`) with two adversary shapes:
+  - *Alias graph bomb* (384 B → ~780 k aliased nodes): we reject in ~10 ms, eemeli rejects in ~40 ms, js-yaml accepts (aliases become shared references).
+  - *Flat mapping bomb* (10 k distinct keys): we refuse past the default 10 k-node cap in ~360 ms; js-yaml builds it (~310 ms, linear); **eemeli `yaml` is quadratic on wide mappings (~23.5 s)**.
+  - Throughput on a 2.3 KB config: ours 5.69 ms vs js-yaml 1.58 ms vs eemeli 12.19 ms — honest, machine-dependent, regenerable via `npm run bench`.
+- **New README "Threat model"** — attack shape → defence mapping (Billion Laughs, alias bomb, mapping bomb, deep nesting, runaway scalars, duplicate keys, prototype pollution, hidden/bidi chars, code-execution tags).
+- **Node range verified** — core suites pass on Node 16 & 18 (previously only 20/22 were CI-tested); CI matrix is now `[16, 18, 20, 22]`, backing the README "Node.js ≥16 (CI-tested)" claim.
+- **`SECURITY.md` expanded** — linter security rules (unsafe-tag, hidden-character) added to the protections list.
+- Dev-only: `yaml` (eemeli) added as a devDependency for the benchmark (never ships in the published package).
+
 ## 1.16.0 (2026-08-10)
 
 ### Feature: four new linter rules (security + consistency)
