@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.17.1 (2026-08-10)
+
+### Fix: CLI crashed on a fresh checkout / in CI; summary now always printed
+
+- **The `yaml-lint` binary imported `../src/index.min.js` — a gitignored build artifact.** Running the CLI from a clean `git clone` (or in CI before the build step) crashed with `ERR_MODULE_NOT_FOUND`, and CI on `main` was **red** for the 1.16.0 and 1.17.0 pushes. The bin now imports the committed ES module source (`../src/index.js`), and `src/index.js` is added to the package `files` so the published binary resolves it too. The CLI now works from a fresh checkout, in CI, and from the installed package — no build step required.
+- **The result summary was silently suppressed** whenever any requested file could not be read (`results.length > 1 || targets.length === 1` heuristic). It is now always printed, with a `(N could not be read)` suffix in that case.
+- **`--json` mode now reports unreadable files** as `{ file, error }` entries (plus a top-level `unreadable` count) instead of silently dropping them.
+
 ## 1.17.0 (2026-08-10)
 
 ### Docs & tooling: comparison, honest benchmarks, threat model, verified Node range
