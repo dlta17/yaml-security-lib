@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.17.2 (2026-08-10)
+
+### Fix: build tooling on Node 16/18 — CI matrix green again
+
+- **`serialize-javascript@7` (pulled in by `@rollup/plugin-terser`) calls the global `crypto.getRandomValues`, which does not exist on Node < 17.4** — so `npm run build` crashed with `ReferenceError: crypto is not defined` on the Node 16 and 18 matrix rows (that failure surfaced right after the 1.17.1 CLI fix turned CI from red→still-red). The fast, correct fix for a build-only problem is a package override, not a runtime change: npm now resolves `serialize-javascript` to **6.0.2** (which reads `require('crypto')`, present on every supported Node), keeping `build:cjs` / `build:esm` / `build:browser` working on 16, 18, 20 and 22.
+- The library runtime and the published tarball are unaffected (this only pins a transitive devDependency).
+
 ## 1.17.1 (2026-08-10)
 
 ### Fix: CLI crashed on a fresh checkout / in CI; summary now always printed
