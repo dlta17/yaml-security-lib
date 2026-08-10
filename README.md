@@ -111,6 +111,30 @@ const parser = new YamlSecurity({
 
 Want untrusted input locked down in one line? Pass `strict: true` instead — see [Strict profile](#strict-profile-strict-true).
 
+## Lean builds (subpath imports)
+
+The umbrella package bundles every feature (parser + stream + validator + linter ≈ 114 KB min / 31 KB gzip). If you only need part of it, import a lean subpath instead — each one is a standalone bundle with exactly its own API:
+
+| Subpath | Exports | Size (min / gzip) |
+|---------|---------|-------------------|
+| `yaml-security-lib` | Everything (backward compatible default) | 114 KB / 31 KB |
+| `yaml-security-lib/core` | `YamlSecurity`, `parse`, `parseAll`, `dump`, `createStream`, `parseStream`, `validateYaml`, `setLimits`, `tree`, … — no schema builder, no linter | 102 KB / 28 KB |
+| `yaml-security-lib/validate` | `s.*`, `validate`, `createStreamValidator`, `fromJSONSchema`, `toJSONSchema` — pure schema toolkit, **no parser** | 16 KB / 4.7 KB |
+| `yaml-security-lib/lint` | `lint`, `LINT_RULES` | 58 KB / 17 KB |
+
+```js
+// Only parse/dump untrusted YAML → skip the validator + linter bundles.
+import { YamlSecurity } from 'yaml-security-lib/core'
+
+// Only validate plain JS values against a spec → skip the parser entirely.
+import { s, validate } from 'yaml-security-lib/validate'
+
+// Only lint → also skips the streaming engine.
+import { lint } from 'yaml-security-lib/lint'
+```
+
+`YamlSecurity.parse()` and `validateYaml()` remain available from `core`; `validateYaml` combines parsing + validation, so it lives with the parser ([`YamlSecurity` docs](#new-yamlsecurityopts)).
+
 ## API
 
 ### `new YamlSecurity(opts?)`

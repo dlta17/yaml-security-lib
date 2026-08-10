@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.14.0 (2026-08-10)
+
+### Feature: lean subpath imports (`core` / `validate` / `lint`) + smaller bundles
+
+- **New exports map with tree-shakeable subpaths**, all backward compatible (`yaml-security-lib` stays the full API):
+  - `yaml-security-lib/core` — parser + dump + streaming + `YamlSecurity` (no schema builder, no linter): **102 KB min / 28 KB gzip**.
+  - `yaml-security-lib/validate` — pure schema toolkit (`s.*`, `validate`, `createStreamValidator`, `fromJSONSchema`/`toJSONSchema`) imported straight from `src/validate.js`, so it bundles **no parser**: **16 KB min / 4.7 KB gzip**.
+  - `yaml-security-lib/lint` — `lint` + `LINT_RULES`.
+- **The linter no longer pulls in the streaming engine.** `lint()` used `new YamlSecurity().parseAll()` internally, dragging the whole `YamlSecurity` class (and with it ~half of the streaming parser) into any bundle that imported `lint`. It now wraps the standalone batch `parseAll` behind a tiny `{ ok }` catch-wrapper with identical error semantics — the lint bundle dropped from ~106 KB to **58 KB min / 17 KB gzip**.
+- **`rollup.config.js` is now multi-entry**: `esm`/`cjs` builds emit one self-contained minified file per entry (`index`, `core`, `validate`, `lint`); browser builds are unchanged.
+- Docs: README "Lean builds (subpath imports)" table with per-subpath sizes + usage examples.
+- Tests: `test/entries.js` (+34) verifies each subpath exposes exactly its public names (`core` has no `s`/`lint`, `validate` has no `YamlSecurity`/`parse`, `lint` has no class) and smoke-tests parse, pure-validate, and lint. Full suite green: 274 + 262 + 157 + 1645 + 406 (YAML Test Suite) + 262 + 95 + 60 + 34.
+
 ## 1.13.2 (2026-08-10)
 
 ### Docs: Quick Start guide — pick the right method fast

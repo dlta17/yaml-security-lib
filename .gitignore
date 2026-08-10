@@ -4,4 +4,10 @@ dist/
 .env
 src/index.cjs
 src/index.min.js
+src/core.cjs
+src/core.min.js
+src/validate.cjs
+src/validate.min.js
+src/lint.cjs
+src/lint.min.js
 test-yaml-suite
