@@ -133,7 +133,7 @@ import { s, validate } from 'yaml-security-lib/validate'
 import { lint } from 'yaml-security-lib/lint'
 ```
 
-`YamlSecurity.parse()` and `validateYaml()` remain available from `core`; `validateYaml` combines parsing + validation, so it lives with the parser ([`YamlSecurity` docs](#new-yamlsecurityopts)).
+`YamlSecurity.parse()` and `validateYaml()` remain available from `core`; `validateYaml` combines parsing + validation, so it lives with the parser ([`YamlSecurity` docs](#new-yamlsecurityopts)). TypeScript declarations ship with every subpath (`core`/`validate`/`lint` each resolve their own `.d.ts`).
 
 ## API
 

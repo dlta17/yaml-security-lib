@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.14.1 (2026-08-10)
+
+### Fix: TypeScript declarations for the lean subpaths
+
+- **`yaml-security-lib/core`, `/validate` and `/lint` now ship their own `.d.ts`.** `v1.14.0` added the runtime subpath entries but the package only had one root declaration file, so TypeScript consumers hit *"Could not find a declaration file for module …"* on `import … from 'yaml-security-lib/core'` (etc.).
+- Each subpath gets a `types` condition in `exports` (`src/core.d.ts`, `src/validate.d.ts`, `src/lint.d.ts`) that re-exports exactly the entry's public names — so `core` has no `validate`/`lint`/`s` types, `validate` has no parser types, `lint` has no class types (mirrors the runtime surfaces verified in `test/entries.js`).
+- Verified with real `tsc` (strict, `moduleResolution: node16`, ESM consumer): all subpath imports resolve; `@ts-expect-error` guards confirm `validate`/`lint` are absent from `core`, `YamlSecurity` absent from `validate`/`lint`, and `validateYaml` absent from `validate`.
+- Docs: README "Lean builds" notes each subpath ships its own declarations.
+
 ## 1.14.0 (2026-08-10)
 
 ### Feature: lean subpath imports (`core` / `validate` / `lint`) + smaller bundles
