@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.15.0 (2026-08-10)
+
+### Build & tooling: fix `build:types`, browser lean bundles, CI that catches build breakage
+
+- **Fixed broken `build:types`.** The script ran `tsc --emitDeclarationOnly`, which required a TypeScript install but `typescript` was never in `devDependencies` — so it always failed with `tsc: not found`. TypeScript is now a devDependency, and the script was repurposed to *validate* the shipped declarations instead of generating inferred ones: `tsc --noEmit -p tsconfig.json --allowJs false`, which type-checks only `src/*.d.ts` (and fails CI if one ever gets broken). `types/` output is gitignored.
+- **Browser lean bundles.** `build:browser` now emits a CDN bundle per subpath, so browser users get the same slim options as Node:
+
+  | File | Global | Exports |
+  |------|--------|---------|
+  | `dist/yaml-security.mjs` / `.min.js` | `YamlSecurity` | Everything |
+  | `dist/core.mjs` / `core.min.js` | `YamlSecurityCore` | Parser + stream + validateYaml |
+  | `dist/validate.mjs` / `validate.min.js` | `YamlSecurityValidate` | Schema toolkit, no parser |
+  | `dist/lint.mjs` / `lint.min.js` | `YamlSecurityLint` | Linter |
+
+  (the full-bundle filenames are unchanged, so existing CDN links keep working). `rollup.config.js` gained per-entry `BROWSER_TARGETS` (`browser-esm` + `browser-iife`).
+- **CI now catches the kind of breakage that hit the `dist/` bundles in 1.13.0.** The test job builds every bundle (`npm run build`: 8 Node + 8 browser) and smoke-tests CJS + ESM subpath imports and all browser outputs, plus a new `build:types` step.
+- Docs: README "Browser → Lean CDN bundles" section with globals/table + examples.
+
 ## 1.14.2 (2026-08-10)
 
 ### Docs: Academic / Personal License section

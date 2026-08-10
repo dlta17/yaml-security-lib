@@ -748,6 +748,27 @@ Or with ES modules:
 </script>
 ```
 
+### Lean CDN bundles
+
+The `core` / `validate` / `lint` lean bundles ship as browser builds too, so CDN users can load just what they need:
+
+| File | Global (script tag) | Exports |
+|------|--------------------|---------|
+| `dist/yaml-security.min.js` | `YamlSecurity` | Everything |
+| `dist/core.min.js` | `YamlSecurityCore` | A `YamlSecurity` + `parse`/`parseAll`/`dump`/`validateYaml`/`createStream`/… |
+| `dist/validate.min.js` | `YamlSecurityValidate` | `validate`, `s.*` schema toolkit |
+| `dist/lint.min.js` | `YamlSecurityLint` | `lint`, `LINT_RULES` |
+
+```html
+<script src="https://unpkg.com/yaml-security-lib/dist/core.min.js"></script>
+<script>
+  const { YamlSecurity } = YamlSecurityCore
+  console.log(new YamlSecurity().parse('hello: world'))
+</script>
+```
+
+ESM equivalents ship as `dist/core.mjs`, `dist/validate.mjs` and `dist/lint.mjs`.
+
 ## License
 
 **Dual License:** free for personal, academic and research use; commercial license for closed-source products.
