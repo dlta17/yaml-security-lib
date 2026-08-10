@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.17.4 (2026-08-11)
+
+### Docs: `docs/USAGE.md` — practical guide, troubleshooting, FAQ
+
+- **New `docs/USAGE.md`** — a scenario-based guide on top of the README API reference: 12 copy-paste recipes (safe parse, `strict` profile, per-instance vs global limits, js-yaml drop-in, multi-document, streaming with incremental validation, schema validation, custom schemas/tags, linter, CLI, browser/CDN, `tree()`/`parseTree()`), a **limits reference** (standard vs `strict` defaults), a **troubleshooting table** mapping each real rejection message to its cause and fix, and an FAQ.
+- Every claim was verified against a live run before writing — including three corrections captured on the way: standalone `parse`/`parseAll` are the low-level **throwing** variants; `createStreamValidator` is an event-hook object (not a `.write()` API, which is `createStream({ validate, abortOnError })`); and `abortOnError: true` rejects by **throwing** `YAMLException` from the offending `write()`/`end()` rather than via an `error` event.
+- README top nav now points new users to the guide.
+- Docs only — no library behaviour, bundles, or API changes.
+
 ## 1.17.3 (2026-08-10)
 
 ### Test & docs: CLI regression suite locks in the 1.16/1.17 fixes
