@@ -5741,7 +5741,14 @@ export {
  * @returns {{valid: boolean, issues: Array<{rule: string, severity: string, message: string, line: number, column: number, snippet: string}>, errors: number, warnings: number}}
  */
 export function lint(yaml, options) {
-  return lintCore(yaml, options || {}, (s) => new YamlSecurity().parseAll(s));
+  // Uses the standalone batch `parseAll` behind a `{ ok }` wrapper instead of
+  // `new YamlSecurity().parseAll()`, so pulling the linter in does not drag the
+  // streaming engine along (keeps `yaml-security-lib/lint` lean).
+  const parseFn = (s) => {
+    try { return { ok: true, result: parseAll(s) }; }
+    catch (e) { return { ok: false, error: e.message }; }
+  };
+  return lintCore(yaml, options || {}, parseFn);
 }
 
 export { LINT_RULES };

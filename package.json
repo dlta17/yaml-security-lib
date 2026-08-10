@@ -13,11 +13,29 @@
       "import": "./src/index.min.js",
       "require": "./index.cjs"
     },
+    "./core": {
+      "import": "./src/core.min.js",
+      "require": "./src/core.cjs"
+    },
+    "./validate": {
+      "import": "./src/validate.min.js",
+      "require": "./src/validate.cjs"
+    },
+    "./lint": {
+      "import": "./src/lint.min.js",
+      "require": "./src/lint.cjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "src/index.min.js",
     "src/index.cjs",
+    "src/core.min.js",
+    "src/core.cjs",
+    "src/validate.min.js",
+    "src/validate.cjs",
+    "src/lint.min.js",
+    "src/lint.cjs",
     "src/index.d.ts",
     "index.cjs",
     "bin/yaml-lint.js",
@@ -27,7 +45,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "test": "node test/index.js && node test/fuzz.js && node test/stream.js && node test/stream-fuzz.js && node test/yaml-test-suite.js && node test/tree-suite.js && node test/validate.js && node test/lint.js",
+    "test": "node test/index.js && node test/fuzz.js && node test/stream.js && node test/stream-fuzz.js && node test/yaml-test-suite.js && node test/tree-suite.js && node test/validate.js && node test/lint.js && node test/entries.js",
     "lint": "node bin/yaml-lint.js examples/basic.js",
     "prepack": "npm run build:cjs && npm run build:esm && npm run build:browser",
     "example": "node examples/basic.js",
