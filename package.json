@@ -1,6 +1,6 @@
 {
   "name": "yaml-security-lib",
-  "version": "1.14.0",
+  "version": "1.14.1",
   "description": "Secure YAML parser — duplicate key detection, alias depth limiting, prototype pollution prevention",
   "main": "index.cjs",
   "types": "src/index.d.ts",
@@ -10,18 +10,22 @@
   },
   "exports": {
     ".": {
+      "types": "./src/index.d.ts",
       "import": "./src/index.min.js",
       "require": "./index.cjs"
     },
     "./core": {
+      "types": "./src/core.d.ts",
       "import": "./src/core.min.js",
       "require": "./src/core.cjs"
     },
     "./validate": {
+      "types": "./src/validate.d.ts",
       "import": "./src/validate.min.js",
       "require": "./src/validate.cjs"
     },
     "./lint": {
+      "types": "./src/lint.d.ts",
       "import": "./src/lint.min.js",
       "require": "./src/lint.cjs"
     },
@@ -37,6 +41,9 @@
     "src/lint.min.js",
     "src/lint.cjs",
     "src/index.d.ts",
+    "src/core.d.ts",
+    "src/validate.d.ts",
+    "src/lint.d.ts",
     "index.cjs",
     "bin/yaml-lint.js",
     "dist/",
