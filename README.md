@@ -19,6 +19,9 @@
 
 Zero dependencies. Works in Node.js ≥16 (CI-tested on 16, 18, 20 and 22) and all modern browsers.
 
+> **New here?** Start with the [Usage Guide](docs/USAGE.md) — practical recipes,
+> limit reference, troubleshooting, and FAQ.
+>
 > **For contributors / maintainers:** see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a
 > deep dive into the two parsing engines (batch + streaming), the security model, and a
 > code map of the single-file core (`src/index.js`).
