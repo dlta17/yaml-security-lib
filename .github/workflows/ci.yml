@@ -45,10 +45,13 @@ jobs:
           YAML_SUITE_DIR: /tmp/yaml-test-suite/src
       - name: Test schema validation
         run: node test/validate.js
-      - name: Build + test CJS
+      - name: Validate type declarations
+        run: npm run build:types
+      - name: Build all bundles + verify
         shell: bash
         run: |
-          npm run build:cjs
+          npm run build
           node -e "const {YamlSecurity}=require('./index.cjs');const p=new YamlSecurity();const r=p.parse('test: ok');process.exit(r.ok?0:1)"
-      - name: Build browser bundles
-        run: npm run build:browser
+          node -e "const {YamlSecurity}=require('./src/core.cjs');const {validate}=require('./src/validate.cjs');const {lint}=require('./src/lint.cjs');if(!(new YamlSecurity().parse('a: 1').ok)||typeof validate!=='function'||typeof lint!=='function')process.exit(1)"
+          node --input-type=module -e "await import('./src/core.min.js');const {validate}=await import('./src/validate.min.js');const {lint}=await import('./src/lint.min.js');if(typeof validate!=='function'||typeof lint!=='function')process.exit(1)"
+          test -s dist/core.mjs && test -s dist/core.min.js && test -s dist/yaml-security.mjs && test -s dist/yaml-security.min.js && echo "browser bundles OK"

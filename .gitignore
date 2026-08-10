@@ -10,4 +10,5 @@ src/validate.cjs
 src/validate.min.js
 src/lint.cjs
 src/lint.min.js
+types/
 test-yaml-suite
