@@ -1,0 +1,9 @@
+server:
+  host: localhost
+  port: 8080
+  features:
+    - ssl
+    - cors
+  limits:
+    - 5
+    - 10

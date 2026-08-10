@@ -45,6 +45,8 @@ jobs:
           YAML_SUITE_DIR: /tmp/yaml-test-suite/src
       - name: Test schema validation
         run: node test/validate.js
+      - name: Test CLI linter
+        run: npm run lint
       - name: Validate type declarations
         run: npm run build:types
       - name: Build all bundles + verify

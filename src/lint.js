@@ -6,6 +6,10 @@ export const LINT_RULES = Object.freeze({
   'duplicate-key': 'error',
   'anchor-bomb': 'error',
   'prototype-pollution': 'error',
+  'unsafe-tag': 'warning',
+  'hidden-character': 'warning',
+  'merge-key': 'warning',
+  'inconsistent-eol': 'warning',
   'trailing-spaces': 'warning',
   'line-length': 'warning',
   'missing-newline-at-eof': 'warning',
@@ -24,6 +28,13 @@ const SECURITY_MATCHERS = [
 ];
 
 const TRUTHY_WORDS = /^(yes|no|on|off)$/i;
+
+// Tags for code-executing language plugins (js-yaml FULL_SCHEMA, PyYAML, …).
+const UNSAFE_TAG_RE = /!!\s*(js|python|ruby|perl|php)\s*\/[A-Za-z0-9_.$-]*/i;
+// Invisible & bidirectional text controls used in "trojan source" attacks.
+const HIDDEN_CHARS_RE = /[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2061\u2066-\u2069\uFEFF]/;
+// YAML merge key `<<` — aliased merges can amplify entity expansion.
+const MERGE_KEY_RE = /(?:^|[\s\t](?:-|&)\s*|[\s\t])<<\s*:/;
 
 function resolveRules(rules) {
   const out = {};
@@ -166,6 +177,22 @@ function runStyleRules(yaml, lines, rules, maxLineLength, issues) {
       }
     }
 
+    const code = stripComment(line);
+    if (rules['unsafe-tag'] !== 'off') {
+      const m = UNSAFE_TAG_RE.exec(code);
+      if (m)
+        issues.push({ rule: 'unsafe-tag', severity: rules['unsafe-tag'], message: 'unsafe "' + m[0] + '" tag: may execute code in tools that implement it', line: lineNo, column: m.index + 1, snippet: line });
+    }
+    if (rules['hidden-character'] !== 'off') {
+      const hm = HIDDEN_CHARS_RE.exec(code);
+      if (hm)
+        issues.push({ rule: 'hidden-character', severity: rules['hidden-character'], message: 'invisible or bidi control character U+' + hm[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0') + ' (trojan-source risk)', line: lineNo, column: hm.index + 1, snippet: line });
+    }
+    if (rules['merge-key'] !== 'off') {
+      if (MERGE_KEY_RE.test(code))
+        issues.push({ rule: 'merge-key', severity: rules['merge-key'], message: 'YAML merge key "<<" — aliased merges can amplify alias expansion', line: lineNo, column: code.indexOf('<<') + 1, snippet: line });
+    }
+
     let vtok = '';
     const hci = firstColonCheck(line);
     if (hci >= 0) vtok = stripComment(line.slice(hci + 1)).trim();
@@ -179,6 +206,18 @@ function runStyleRules(yaml, lines, rules, maxLineLength, issues) {
       const last = lines[lines.length - 1] || '';
       issues.push({ rule: 'missing-newline-at-eof', severity: rules['missing-newline-at-eof'], message: 'file does not end with a newline', line: lines.length || 1, column: last.length + 1, snippet: last });
     }
+  }
+
+  if (rules['inconsistent-eol'] !== 'off') {
+    const raw = yaml.split('\n');
+    let hasCrlf = false;
+    let firstLfOnly = 0;
+    for (let i = 0; i < raw.length - 1; i++) {
+      if (raw[i].endsWith('\r')) hasCrlf = true;
+      else if (firstLfOnly === 0) firstLfOnly = i + 1;
+    }
+    if (hasCrlf && firstLfOnly > 0)
+      issues.push({ rule: 'inconsistent-eol', severity: rules['inconsistent-eol'], message: 'mixed line endings (CRLF and LF)', line: firstLfOnly, column: 1, snippet: lines[firstLfOnly - 1] || '' });
   }
 }
 

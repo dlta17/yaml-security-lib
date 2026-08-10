@@ -79,6 +79,42 @@ check('truthy-dash', hasRule('- no\n', 'truthy-yes-no'));
 check('truthy-dash-number', !hasRule('- 5\n', 'truthy-yes-no'));
 check('truthy-comment', hasRule('a: yes # comment\n', 'truthy-yes-no'));
 
+// ── security rules: unsafe-tag / hidden-character / merge-key / inconsistent-eol ──
+{
+  const r = lint('x: 1\nf: !!js/function\n');
+  const ut = r.issues.find(i => i.rule === 'unsafe-tag');
+  check('unsafe-tag js', !!ut, JSON.stringify(r.issues));
+  check('unsafe-tag python', hasRule('o: !!python/object c.M\n', 'unsafe-tag'));
+  check('unsafe-tag ruby', hasRule('x: !!ruby/object:Cls\n', 'unsafe-tag'));
+  check('unsafe-tag location', ut && ut.line === 2 && ut.severity === 'warning', JSON.stringify(ut));
+  check('unsafe-tag string safe', !hasRule('a: !!str\n', 'unsafe-tag'));
+  check('unsafe-tag custom safe', !hasRule('a: !custom foo\n', 'unsafe-tag'));
+  check('unsafe-tag invalidates nothing', lint('f: !!js/function\n').valid === true);
+}
+check('hidden-character bidi', hasRule('a: "x\u202Ey"\n', 'hidden-character'));
+check('hidden-character rlo', hasRule('a: x\u202ey\n', 'hidden-character'));
+check('hidden-character zwsp', hasRule('k\u200Bey: 1\n', 'hidden-character'));
+check('hidden-character bom', hasRule('\uFEFFa: 1\n', 'hidden-character'));
+check('hidden-character clean', !hasRule('a: plain text\n', 'hidden-character'));
+{
+  const r = lint('a: "x\u202Ey"\n');
+  const hc = r.issues.find(i => i.rule === 'hidden-character');
+  check('hidden-character message', hc && /U\+202E/.test(hc.message), hc && hc.message);
+}
+check('merge-key block', hasRule('d: &x\n  a: 1\nb:\n  <<: *x\n', 'merge-key'));
+check('merge-key seq', hasRule('- <<: *d\n', 'merge-key'));
+check('merge-key value safe', !hasRule('a: <<- value\n', 'merge-key'));
+check('merge-key in quote safe', !hasRule('a: "<<: x"\n', 'merge-key'));
+check('inconsistent-eol', hasRule('a: 1\r\nb: 2\n', 'inconsistent-eol'));
+check('inconsistent-eol crlf only', !hasRule('a: 1\r\nb: 2\r\n', 'inconsistent-eol'));
+check('inconsistent-eol lf only', !hasRule('a: 1\nb: 2\n', 'inconsistent-eol'));
+{
+  const r = lint('a: 1\r\nb: 2\n');
+  const ie = r.issues.find(i => i.rule === 'inconsistent-eol');
+  check('inconsistent-eol location', ie && ie.line === 2, JSON.stringify(ie));
+}
+check('block scalar skips unsafe-tag', !hasRule('t: |\n  !!js/function text\n', 'unsafe-tag'));
+
 // ── block scalars must not trigger colon/dash rules on content lines ──
 {
   const y = 'text: |\n  line one\n  line: two\n- item\nmore: 1\n';
@@ -103,6 +139,8 @@ check('truthy-comment', hasRule('a: yes # comment\n', 'truthy-yes-no'));
 check('rules array', !hasRule('a: yes\n', 'truthy-yes-no', { rules: ['syntax-error'] }));
 check('rules array keeps dup', hasRule('a: 1\na: 2\n', 'duplicate-key', { rules: ['syntax-error', 'duplicate-key'] }));
 check('rules array style stays off', !hasRule('a: yes \n', 'trailing-spaces', { rules: ['syntax-error'] }));
+check('rules array new rules off', !hasRule('f: !!js/function\n', 'unsafe-tag', { rules: ['syntax-error'] }));
+check('rules off unsafe-tag', !hasRule('f: !!js/function\n', 'unsafe-tag', { rules: { 'unsafe-tag': false } }));
 check('rules off string', !hasRule('a: yes\n', 'truthy-yes-no', { rules: { 'truthy-yes-no': 'off' } }));
 check('rules off bool', !hasRule('a: yes\n', 'truthy-yes-no', { rules: { 'truthy-yes-no': false } }));
 check('rules off zero', !hasRule('a: yes\n', 'truthy-yes-no', { rules: { 'truthy-yes-no': 0 } }));
@@ -139,6 +177,7 @@ check('rules explicit warn', lint('a: yes\n', { rules: { 'truthy-yes-no': 'warni
 }
 check('LINT_RULES frozen', Object.isFrozen(LINT_RULES));
 check('LINT_RULES severities', LINT_RULES['syntax-error'] === 'error' && LINT_RULES['line-length'] === 'warning');
+check('new rules default warning', LINT_RULES['unsafe-tag'] === 'warning' && LINT_RULES['hidden-character'] === 'warning' && LINT_RULES['merge-key'] === 'warning' && LINT_RULES['inconsistent-eol'] === 'warning');
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fails.length) {
