@@ -47,6 +47,8 @@ jobs:
         run: node test/validate.js
       - name: Test CLI linter
         run: npm run lint
+      - name: Test CLI regression suite
+        run: node test/cli.js
       - name: Validate type declarations
         run: npm run build:types
       - name: Build all bundles + verify

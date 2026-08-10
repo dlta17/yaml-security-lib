@@ -314,7 +314,16 @@ comment markers). Options: `indent`, `flowLevel`, `sortKeys`, `lineWidth`,
   `validate(value, spec)` for batch, `createStreamValidator(spec)` for
   incremental validation during streaming (emits `violation` events).
 - `src/lint.js` — `lint(yaml, options)` returns `{ valid, issues, errors, warnings }`
-  and a `LINT_RULES` list; the CLI `bin/yaml-lint.js` wraps it.
+  and a `LINT_RULES` list (14 rules: 4 errors — syntax/dup-key/anchor-bomb/
+  proto-pollution — plus 10 warnings, several of which run on the raw text
+  with block-scalar skipping). The CLI `bin/yaml-lint.js` wraps it.
+- `bin/yaml-lint.js` — imports `../src/index.js` (the committed ES module, not a
+  build artifact) so it works from a fresh checkout, CI, and the published
+  package with no build step. Exit codes: `0` clean, `1` lint errors,
+  `2` argument/IO problems (unknown option, unreadable file). Supports
+  multiple files, `--json`, `--max-line-length`, `-h/-v`; stdin when no files.
+  The summary line always prints, including `(N could not be read)` for
+  unreadable targets.
 
 ---
 
@@ -350,11 +359,17 @@ comment markers). Options: `indent`, `flowLevel`, `sortKeys`, `lineWidth`,
 ## 11. Testing
 
 ```bash
-npm test        # index.js + fuzz.js + stream.js + stream-fuzz.js
+npm test   # runs every suite below in order
 ```
 
 - `test/index.js` — unit + security + limits
 - `test/fuzz.js` — invariant/security fuzz (batch)
 - `test/stream.js` — streaming API
 - `test/stream-fuzz.js` — js-yaml oracle fuzz (streaming)
-- YAML Test Suite — 406 cases, 100% (351 files), event tree 262/262
+- `test/yaml-test-suite.js` — YAML Test Suite conformance (406 cases)
+- `test/tree-suite.js` — `tree()` event-tree conformance
+- `test/validate.js` — schema validation
+- `test/lint.js` — linter rules + `npm run lint` self-check
+- `test/entries.js` — every entry point / subpath resolves and exports
+- `test/cli.js` — spawns `bin/yaml-lint.js` as a real child process and asserts
+  exit codes / stdout / stderr (covers the 1.16/1.17 CLI regressions)
