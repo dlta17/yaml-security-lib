@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.17.3 (2026-08-10)
+
+### Test & docs: CLI regression suite locks in the 1.16/1.17 fixes
+
+- **New `test/cli.js` (33 assertions)** — runs `bin/yaml-lint.js` as a real child process and asserts the documented exit-code contract: `0` clean, `1` lint errors, `2` argument/IO problems. Covers stdin + multiple files, the always-printed summary with `(N could not be read)`, `--json` reporting unreadable files as `{ file, error }`, `-v`/`-h`, unknown-option and bad `--max-line-length` rejection, warning-only rules keeping exit code `0`, and — critically — that the CLI works with **no build artifacts present** (the `ERR_MODULE_NOT_FOUND` regression from 1.17.1).
+- Wired into `npm test` and a dedicated CI step so every Node matrix row runs it.
+- `docs/ARCHITECTURE.md` §8 now documents the 14 lint rules, the CLI exit-code/`--json`/source-import contract; §11 lists all test suites including `test/cli.js`.
+- Test/docs only — no library behaviour, runtime, bundle or API changes.
+
 ## 1.17.2 (2026-08-10)
 
 ### Fix: build tooling on Node 16/18 — CI matrix green again
