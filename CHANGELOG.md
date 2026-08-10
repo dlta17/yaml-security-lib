@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.16.0 (2026-08-10)
+
+### Feature: four new linter rules (security + consistency)
+
+New `LINT_RULES`, all `warning` severity and toggleable like any other rule:
+
+- **`unsafe-tag`** — flags code-execution tags such as `!!js/function`, `!!python/object`, `!!ruby/object`, `!!perl/...`, `!!php/...`. The parser treats these as inert, but tools that implement them (js-yaml `FULL_SCHEMA`, PyYAML, …) run code when they see one — and this YAML library itself parses them without error, so nothing else catches them.
+- **`hidden-character`** — flags invisible / bidi text controls (U+200B–U+200F, U+202A–U+202E incl. the right-to-left-override used in trojan-source attacks, U+2060–U+2061/66–69, soft hyphen, BOM, …). Reports the offending `U+XXXX`.
+- **`merge-key`** — flags the YAML merge key `<<`, which can amplify alias/entity expansion when fed untrusted merged aliases.
+- **`inconsistent-eol`** — flags documents mixing CRLF and LF line endings (reported at the first LF-only line).
+
+Like the existing style rules they operate on the raw text (so they also fire when the YAML is otherwise valid), respect block-scalar skipping, and follow the same `rules` array/object toggling. `test/lint.js` grew from 60 → 85 checks.
+
 ## 1.15.0 (2026-08-10)
 
 ### Build & tooling: fix `build:types`, browser lean bundles, CI that catches build breakage

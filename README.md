@@ -694,6 +694,10 @@ const result = lint('a: 1\nb: yes\nb: 2\n', {});
 | `duplicate-key` | error | Duplicate mapping keys |
 | `anchor-bomb` | error | Circular aliases / excessive alias expansion |
 | `prototype-pollution` | error | Keys like `__proto__` / `constructor` |
+| `unsafe-tag` | warning | Code-execution tags (`!!js/function`, `!!python/object`, …) |
+| `hidden-character` | warning | Invisible / bidi control characters (trojan-source risk) |
+| `merge-key` | warning | YAML merge key `<<` (can amplify alias expansion) |
+| `inconsistent-eol` | warning | Mixed LF/CRLF line endings |
 | `trailing-spaces` | warning | Trailing whitespace at end of line |
 | `line-length` | warning | Lines over `maxLineLength` (default 120) |
 | `missing-newline-at-eof` | warning | File does not end with `\n` |
