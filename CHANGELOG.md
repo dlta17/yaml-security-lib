@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.14.2 (2026-08-10)
+
+### Docs: Academic / Personal License section
+
+- **README "License" section rewritten** with clear, student-friendly guidance: dual-license table, a "Students & academic users — free" walkthrough (coursework / theses / research are free under §4 of `LICENSE.COMMERCIAL`, with the §4b citation requirement and the optional §4c courtesy copy), a personal-use note, and the commercial tiers table.
+- **`LICENSE.COMMERCIAL` §4b DOI placeholder filled** with the real identifier (`https://doi.org/10.5281/zenodo.21684897`, same one shown in the README badges).
+- No code changes — docs/legal-docs only.
+
 ## 1.14.1 (2026-08-10)
 
 ### Fix: TypeScript declarations for the lean subpaths

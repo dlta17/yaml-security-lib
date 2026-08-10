@@ -750,15 +750,45 @@ Or with ES modules:
 
 ## License
 
-**Dual License:**
+**Dual License:** free for personal, academic and research use; commercial license for closed-source products.
 
-| Use Case | License | Cost |
+| Use case | License | Cost |
 |----------|---------|------|
-| Personal / Educational / Research | [AGPL-3.0](LICENSE) | Free |
-| Academic publication | [AGPL-3.0](LICENSE) + citation | Free |
+| Personal / open-source projects | [AGPL-3.0](LICENSE) | Free |
+| Students, teachers & coursework | [Academic Use terms](LICENSE.COMMERCIAL) §4 | Free |
+| Academic research / publications | [AGPL-3.0](LICENSE) + citation | Free |
 | Commercial product (closed-source) | [Commercial License](LICENSE.COMMERCIAL) | Paid |
 
-See [LICENSE](LICENSE) (AGPL-3.0) and [LICENSE.COMMERCIAL](LICENSE.COMMERCIAL).
+### Students & academic users — free
+
+If you're a **student, teacher, or academic researcher**, you don't need to pay for anything:
+
+- Use the library freely in coursework, theses, assignments, class demos and research projects. Academic use (non-commercial research, education, teaching) is explicitly free under §4 of the [Commercial License Agreement](LICENSE.COMMERCIAL) — no license key, no registration, no fee.
+- The only ask (from §4b): **cite the work** in any publication that results from it:
+
+  > YAML Security Lib — Nedal Ibrahim.<br>
+  > https://github.com/dlta17/yaml-security-lib · https://doi.org/10.5281/zenodo.21684897
+
+- §4c also requests a courtesy copy of any publication referencing the library — send it to salamanedal@gmail.com (optional, appreciated).
+- Academic use is valid at accredited institutions; if you're an independent learner, personal non-commercial use is covered by the free [AGPL-3.0](LICENSE) anyway.
+
+### Personal use
+
+Non-commercial personal projects (private or open-source) are free under [AGPL-3.0](LICENSE) — no purchase, no citation obligation.
+
+### Commercial use
+
+Closed-source products aren't covered by the AGPL's copyleft obligations. A [Commercial License](LICENSE.COMMERCIAL) lets you use the library in proprietary products without those obligations:
+
+| Tier | Developers | Annual fee |
+|------|-----------|------------|
+| Freelancer | 1 | $199 |
+| Startup | 2–10 | By agreement |
+| Enterprise | Unlimited | By agreement |
+
+Contact salamanedal@gmail.com for startup/enterprise pricing.
+
+See [LICENSE](LICENSE) (AGPL-3.0) and [LICENSE.COMMERCIAL](LICENSE.COMMERCIAL) for the full terms.
 
 ## Author
 
