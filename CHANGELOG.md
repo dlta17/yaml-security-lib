@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.17.5 (2026-08-11)
+
+### Chore: package metadata, end-to-end example, CI Node 24
+
+- **package.json metadata** — added `homepage` (GitHub README) and `bugs` (issues URL) so the npm page links work; `funding` intentionally not added (no verified funding URL exists yet).
+- **New `examples/pipeline.mjs`** (runnable via `npm run example:pipeline`) — end-to-end pipeline: safe parse → schema validation (`validateYaml`) → lint, wired to `examples/basic.yaml` and exiting non-zero on any rejection.
+- **CI matrix now `[16, 18, 20, 22, 24]`** — full suite, YAML Test Suite (406 cases), tree suite (262/262), CLI regression, types check and all bundles build verified locally on **Node 24** before the claim was updated; README/USAGE Node-version claims updated to match.
+- No library behaviour or API changes.
+
 ## 1.17.4 (2026-08-11)
 
 ### Docs: `docs/USAGE.md` — practical guide, troubleshooting, FAQ
