@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.17.6 (upcoming)
+## 1.17.6 (2026-08-14)
 
 ### Fix & hardening: alias/anchor correctness + schema ReDoS guard
 
