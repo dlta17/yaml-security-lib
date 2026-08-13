@@ -204,6 +204,39 @@ billion-laughs style documents are rejected before expansion completes.
 `setAnchor` also tracks alias-source chains (`anchorSources`) and rejects
 circular aliases.
 
+Alias correctness rules (both engines, matching js-yaml/eemeli):
+
+- **Undefined alias → error.** `resolveAlias`/`_resolveAlias` throw
+  `unresolved alias` instead of returning the literal name (the old silent
+  fallback corrupted parsed data).
+- **Anchor on an alias node → error.** `&a *b` (root, sequence item, or mapping
+  value) throws `alias node should not have any properties`; the block anchor
+  pre-scan still tolerates unresolved forward references so ordered anchor
+  chains (`&a hello\n&b *a…`) parse and stay bounded by `maxAliasDepth` with
+  cycle detection.
+- **Anchors are document-scoped.** The streaming parser `_resetAnchors()` at
+  every `documentStart`; batch state is created fresh per document. An alias
+  cannot resolve against an anchor from an earlier document.
+
+### 4.3a Schema regex ReDoS guard
+
+`src/validate.js` compiles every schema `pattern` / `patternProperties` through
+`compileSafePattern`: a dependency-free tokeniser/AST scanner (`analyzeRegex`)
+flags catastrophic-backtracking families — nested quantifiers over a
+non-disjoint atom, nullable sub-expressions inside an unbounded quantifier,
+prefix/char-ambiguous alternation in a quantifier, and adjacent unbounded
+repeats with overlapping first chars — and refuses them with
+`unsafe regex pattern` in both the batch validator and the streaming
+`createStreamValidator`. Bounded quantifiers (`{n,m}`), disjoint alternations,
+and repeats separated by a literal character are conservatively allowed; the
+scanned result is cached per (flags, source).
+
+### 4.3b `dump()` contract
+
+`YamlSecurity#dump()` catches its internal throws and returns `{ ok: false,
+error }` for circular references and pathological depth (never a throw). The
+module-level `dump()` is the raw serializer and may throw.
+
 ### 4.4 Compact quoted-key mappings
 
 `"a":b` (a quoted key with the value attached to the `:`) is accepted

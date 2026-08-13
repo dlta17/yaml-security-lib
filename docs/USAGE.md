@@ -160,6 +160,14 @@ const r = new YamlSecurity().validateYaml('name: أحمد\nage: 30\nroles: [admi
 ```
 
 - `validate(value, spec)` validates a plain JS value already in memory.
+- **Patterns are ReDoS-guarded:** `pattern` and `patternProperties` are scanned
+  before use. Patterns with catastrophic-backtracking structure (nested
+  quantifiers `(a+)+b`, nullable loops `(a*)*`, ambiguous alternation inside a
+  quantifier `(a|aa)+`, overlapping unbounded repeats `a+a+`) throw
+  `unsafe regex pattern — possible catastrophic backtracking` instead of
+  hanging on a crafted input. Bounded quantifiers, disjoint alternations
+  (`(a|b)`) and literals between repeats are unaffected. Rejected in both the
+  batch and streaming validators.
 - Stream and validate incrementally: `createStream({ validate: spec })` emits
   `violation` events as soon as the offending node completes —
   `parser.on('violation', v => console.log(v.path, v.message))` gives
@@ -284,6 +292,8 @@ numbers depend on your active limits.
 | `YAML: input too large (>1MB)` | Input exceeded `maxInputBytes` | Raise `maxInputMB` / `maxInputBytes` |
 | `YAML: alias depth exceeds limit (N)` | Alias reference chain deeper than `maxAliasDepth` | Default is fine for trusted docs; raise if your schema aliases deeply |
 | `YAML: circular alias detected — "name"` | `&a … *a` self/cycle reference | Rewrite the YAML; this is always invalid |
+| `YAML: unresolved alias "*x" — no anchor with that name` | `*x` has no anchor (typo, or it belongs to an earlier document) | Anchors are document-scoped and aliases never fall back to a literal string — define the anchor in the same document or fix the name |
+| `YAML: alias node should not have any properties` | An anchor is applied to an alias node (`&a *b`, e.g. `- &a *b`) | Invalid per YAML spec; mirror of js-yaml/eemeli — remove the anchor from the alias node |
 | `YAML at line N, column N: Duplicate key: "k"` | Duplicate mapping key | Fix the document; duplicates are invalid by design (`duplicate-key` lint rule too) |
 | `Security: cannot set key "__proto__" — prototype pollution blocked` | A `__proto__` / `constructor` / `prototype` path in the input | By design — the key is blocked, nothing is polluted |
 | `YAML: unexpected end of the stream within a flow mapping` (etc.) | Syntax error | Check the reported line/column; run the `yaml-lint` CLI for a full report |

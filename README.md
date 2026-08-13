@@ -401,6 +401,8 @@ Aliases require remembering the anchored node, which conflicts with true constan
 - `anchors: 'buffer'` (default) — anchors/aliases are supported; anchored values are buffered in memory until resolved.
 - `anchors: 'disable'` — any `&`/`*` is rejected immediately for **true zero-buffering** (fully constant-memory streaming for anchor-free documents).
 
+**Anchor rules** (batch and stream, consistent): anchors are **document-scoped** — an alias in one document that references an anchor from an earlier document is rejected (`unresolved alias`); each document starts a fresh anchor table. An alias with **no anchor at all** is an error (`YAML: unresolved alias "*x" — no anchor with that name`), never a literal string fallback. An anchor applied to an **alias node** (`&a *b`, e.g. a bare root, a sequence item `- &a *b`, or a mapping value `x: &a *b`) is rejected with `YAML: alias node should not have any properties`, matching js-yaml/eemeli; self-references (`&a *a`, `&a *b\n&b *a`) fail with `YAML: circular alias detected`. Block anchor chains (`&a hello\n&b *a\n…`) are supported and bounded by `maxAliasDepth`.
+
 ### `YamlSecurity.createStream()` / `YamlSecurity.parseStream()`
 
 Instances expose the same streaming API, bound to the instance's schema and limits:
@@ -472,6 +474,8 @@ Errors carry a JSON-pointer-like `path` (`$.a.b[0]`), a `message`, and the offen
 | `s.custom(fn)` | Custom validator: return `true`/`undefined` to pass, `false` or a string to fail |
 
 Keys in an `s.object(shape)` are **required by default**; wrap with `s.optional()` to relax. Unknown keys are **rejected by default**; set `allowExtra: true` or provide `additionalProperties`.
+
+**Pattern safety:** schemas accept `pattern` (`s.string({ pattern })`) and `patternProperties` keys as strings or RegExps. Because the input being tested is attacker-controlled, every pattern is scanned **before** use and patterns with catastrophic-backtracking structure — nested quantifiers (`(a+)+b`), nullable loops (`(a*)*`, `(a|)` inside a repeat), ambiguous alternation in a quantifier (`(a|aa)+`), adjacent unbounded repeats over overlapping first chars (`a+a+`) — are refused with `unsafe regex pattern — possible catastrophic backtracking`. Bounded quantifiers, disjoint alternations (`(a|b)`, `(ab|cd)`), and repeats separated by literal characters (e-mail shapes) are unaffected.
 
 ### JSON Schema bridge
 

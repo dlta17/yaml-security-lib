@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.17.6 (upcoming)
+
+### Fix & hardening: alias/anchor correctness + schema ReDoS guard
+
+- **Security: schema-regex ReDoS guard.** A schema `pattern` or `patternProperties` key is now scanned before use (`compileSafePattern`); catastrophic patterns — nested quantifiers (`(a+)+b`), nullable loops (`(a*)*`, `(a|)` inside a repeat), ambiguous alternations inside a quantifier (`(a|aa)+`), and adjacent unbounded repeats over overlapping first chars (`a+a+`) — are refused with `unsafe regex pattern — possible catastrophic backtracking`, in the batch and streaming validators alike. A crafted input that previously hung for ~9 s now errors in single-digit milliseconds. Conservative by design: bounded quantifiers, disjoint alternations (`(a|b)`, `(ab|cd)`), and repeats separated by a literal (`a+@b+`, e-mail shapes) are untouched.
+- **Fix: undefined aliases are now errors.** `main: *nope` previously parsed to `{ main: 'nope' }` (the alias silently became a literal string); it now throws `YAML: unresolved alias "*nope" — no anchor with that name`, in both the batch parser and the streaming parser — matching js-yaml/eemeli.
+- **Fix: an anchor on an alias node is rejected.** `&a *b` (as a bare root, a sequence item `- &a *b`, or a mapping value `x: &a *b`) now errors with `YAML: alias node should not have any properties`, matching js-yaml/eemeli. This also closes the one remaining alias-bomb family (sequence-form anchor chains `- &n0 1\n- &n1 *n0…`) that previously parsed. Block anchor chains (`&a hello\n&b *a…`) with cycle detection still work, and self-references (`&a *a`, `&a *b\n&b *a`) still fail with the circular-alias error.
+- **Fix: anchors are document-scoped in the streaming parser.** A `*alias` in one document can no longer resolve against an anchor defined in an earlier document; anchors (and chain depths) are reset at every document boundary, so batch and stream now reject cross-document references identically, while a later document may still redefine its own anchor.
+- **Tests: dump() safeguards.** `YamlSecurity#dump()` already returns `{ ok: false }` (never throws) on circular references and pathologically deep values; the module-level `dump()` is the documented raw/low-level variant that does throw. Both behaviours are now covered by explicit tests (circular → `{ ok:false, error }`, 120 k-deep object/array → `{ ok:false }`).
+- **Tests:** new ReDoS-guard cases (11 hazardous / 12 safe patterns), unresolved-alias coverage (batch + stream), anchor-on-alias rejection, and cross-document isolation.
+
 ## 1.17.5 (2026-08-11)
 
 ### Chore: package metadata, end-to-end example, CI Node 24
