@@ -550,12 +550,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
   }
 
   // Look up an alias by name, charging one alias hit against maxAlias.
-  // Unknown aliases resolve to the literal name string (js-yaml behaviour).
+  // An alias without a matching anchor is a hard error (unresolved alias) —
+  // silently returning the literal name would corrupt the parsed data.
   function resolveAlias(aname) {
     if (++state.aliasHits > cfg.maxAlias) throw new YAMLException('YAML: alias expansion limit exceeded (bomb)');
-    const val = anchors[aname];
-    if (val === undefined) return aname;
-    return val;
+    if (!Object.prototype.hasOwnProperty.call(anchors, aname))
+      throw new YAMLException('YAML: unresolved alias "*' + aname + '" — no anchor with that name');
+    return anchors[aname];
   }
 
   // ── AST event collection ────────────────────────────────
@@ -1957,7 +1958,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
         if (anchors[aname] !== undefined) { _anchoring = false; state._astSuppress--; continue; }
         if (rest.startsWith('*')) {
           const srcAnchor = rest.slice(1).trim();
-          const val = track(resolveAlias(srcAnchor));
+          // Best-effort value: the referenced anchor may be defined later in
+          // the document, so an unresolved alias here falls back to null (the
+          // real parse resolves it in order). Bomb/limit/circular errors still
+          // propagate; setAnchor's chain walk detects cycles.
+          let val = null;
+          try { val = track(resolveAlias(srcAnchor)); }
+          catch (e) { if (/(bomb|limit|circular)/i.test(e.message || '')) throw e; }
           setAnchor(aname, val, srcAnchor);
         } else if (rest.startsWith('[') || rest.startsWith('{')) {
           if (flowClosed(rest)) {
@@ -2220,18 +2227,18 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
             aScalar('', AST_PLAIN, dashAnchorMatch[1]);
             value = track(null);
           } else if (rest.startsWith('*')) {
-            const an = rest.slice(1).trim();
-            aAlias(an);
-            const av = resolveAlias(an);
-            value = track(av === undefined ? rest : av);
+            // An alias node cannot carry an anchor (`&a *b`) — invalid per
+            // spec; mirrors js-yaml/eemeli ("alias node should not have any
+            // properties"). Rejects the seqChain bomb family.
+            aAlias(rest.slice(1).trim());
+            throw new YAMLException('YAML: alias node should not have any properties');
           } else value = track(parseInlineValue(rest, false, dashAnchorMatch[1]));
           setAnchor(dashAnchorMatch[1], value);
           seq.push(value);
         } else if (dashContent.startsWith('*')) {
           const an = dashContent.slice(1).replace(/[ \t]#.*$/, '').trim();
           aAlias(an);
-          const av = resolveAlias(an);
-          seq.push(track(av === undefined ? dashContent : av));
+          seq.push(track(resolveAlias(an)));
         } else if (dashContent.trimStart().startsWith('-')) {
           const itemYaml = [dashContent, ...itemLines.map(l => l.slice(itemDedent))].join('\n');
           seq.push(track(yamlToJS(itemYaml, cfg, _depth + 1, _schema, state, tags, blockDepth + 1)));
@@ -4442,6 +4449,7 @@ class StreamParser {
         return;
       }
       if (this.docStarted && !this.docClosed) this._closeDocument();
+      this._resetAnchors();
       this._emit('documentStart');
       this.docStarted = true;
       this.docClosed = false;
@@ -4453,7 +4461,10 @@ class StreamParser {
       return;
     }
 
-    if (!this.docStarted || this.docClosed) { this._emit('documentStart'); this.docStarted = true; this.docClosed = false; }
+    if (!this.docStarted || this.docClosed) {
+      if (this.docClosed) this._resetAnchors();
+      this._emit('documentStart'); this.docStarted = true; this.docClosed = false;
+    }
 
     this._handleContentLine(line);
   }
@@ -5186,15 +5197,26 @@ class StreamParser {
     if (sourceAnchor) this.anchorSources.set(name, sourceAnchor);
   }
 
-  // Resolve an alias, charging one hit against maxAlias. Unknown aliases stay
-  // literal (mirrors the batch parser).
+  // Resolve an alias, charging one hit against maxAlias. An alias without a
+  // matching anchor is a hard error (unresolved alias) — mirroring the batch
+  // parser and js-yaml/eemeli, rather than returning the literal name.
   _resolveAlias(name) {
     if (this.anchorMode === 'disable') throw this._err('aliases are disabled in streaming mode');
     if (++this.aliasHits > this.cfg.maxAlias)
       throw this._err('YAML: alias expansion limit exceeded (bomb)');
-    const v = this.anchors.get(name);
-    if (v === undefined) return name;
-    return v;
+    if (!this.anchors.has(name))
+      throw this._err('YAML: unresolved alias "*' + name + '" — no anchor with that name');
+    return this.anchors.get(name);
+  }
+
+  // Drop every anchor/alias binding. Anchors are document-scoped: an alias in
+  // one document must not resolve against an anchor defined in an earlier
+  // document (js-yaml/eemeli reject cross-document references with
+  // "unidentified alias"). Reset at each document start.
+  _resetAnchors() {
+    this.anchors = new Map();
+    this.anchorDepths = new Map();
+    this.anchorSources = new Map();
   }
 
   // Collect one line into the active block scalar (pendingBlock). A line at or

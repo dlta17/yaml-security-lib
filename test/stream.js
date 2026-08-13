@@ -392,6 +392,25 @@ testStrict();
   if (ms >= 3000) { fail++; fails.push('stream flow seq too slow: ' + ms + 'ms'); } else pass++;
 }
 
+{
+  // Undefined / unresolved aliases must throw in the stream just as in batch.
+  const batchRejects = (y) => { try { parse(y); return false; } catch (e) { return true; } };
+  const streamRejects = (y) => {
+    const st = createStream();
+    try { st.write(y); st.end(); } catch (e) { return true; }
+    return false;
+  };
+  for (const [name, y] of [
+    ['undefined alias', 'main: *nope\n'],
+    ['undefined flow alias', '[*nonexistent]\n'],
+    ['anchor-on-alias seq', '- &a *a\n'],
+  ]) {
+    const b = batchRejects(y), s = streamRejects(y);
+    if (b && s) pass++;
+    else { fail++; fails.push(name + ': batchRejects=' + b + ' streamRejects=' + s); }
+  }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fails.length) {
   for (const f of fails) console.log('  FAIL: ' + f);

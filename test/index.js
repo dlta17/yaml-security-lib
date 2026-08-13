@@ -184,6 +184,24 @@ YamlSecurity.setLimits();
 // ── Anchor with alias ref (scalar) ──
 assertEqual(p.parse('&a hello\nb: *a').result, { b: 'hello' }, 'anchor + alias scalar');
 
+// ── Unresolved aliases ──
+assert(!p.parse('main: *nope').ok, 'undefined alias blocked');
+assert(!p.parse('[*nonexistent]').ok, 'undefined alias in flow blocked');
+assert(!p.parse('a: 1\nb: *a').ok, 'alias to non-anchor key blocked');
+
+// ── Cross-document anchors are isolated (js-yaml/eemeli reject them) ──
+assert(!p.parseAll('a: &x 1\n---\nb: *x').ok, 'cross-doc anchor blocked (batch)');
+{
+  const docs = p.parseAll('a: &x 1\n---\nb: &x 2\nc: *x');
+  assert(docs.ok, 'doc may redefine its own anchor');
+  assertEqual(docs.result, [{ a: 1 }, { b: 2, c: 2 }], 'redefined anchor stays document-local');
+}
+
+// ── Anchor on an alias node (invalid per spec; matches js-yaml/eemeli) ──
+assert(!p.parse('- &a *a').ok, 'seq anchor-on-alias self-ref blocked');
+assert(!p.parse('- &n0 1\n- &n1 *n0').ok, 'seq anchor-on-alias chain blocked');
+assert(!p.parse('x: &a *b').ok, 'mapping value anchor-on-alias blocked');
+
 // ── Merge keys ──
 const merged = p.parse('defaults: &d\n  x: 1\n  y: 2\ncustom:\n  <<: *d\n  z: 3').result;
 assertEqual(merged.custom, { x: 1, y: 2, z: 3 }, 'merge keys (<<:)');
@@ -250,6 +268,43 @@ assert(dumped.result.includes('x: 1'), 'dump contains x: 1');
 const circ = { a: 1 };
 circ.self = circ;
 assert(!p.dump(circ).ok, 'circular dump blocked');
+assert(/circular/i.test(p.dump(circ).error), 'circular dump error message');
+
+// Deep nesting: dump must not blow the stack or throw — it reports { ok:false }.
+{
+  let deep = {};
+  let cursor = deep;
+  for (let i = 0; i < 120000; i++) { cursor.k = {}; cursor = cursor.k; }
+  const r = p.dump(deep);
+  assert(!r.ok, 'deep dump blocked (no throw)');
+}
+{
+  let deep = { a: 1 };
+  let cursor = deep;
+  for (let i = 0; i < 120000; i++) { const k = {}; cursor.child = k; cursor = k; }
+  const r = p.dump(deep);
+  assert(!r.ok, 'deep object dump blocked (no throw)');
+}
+{
+  const deepArr = [];
+  let cur = deepArr;
+  for (let i = 0; i < 120000; i++) { const a = []; cur.push(a); cur = a; }
+  assert(!p.dump(deepArr).ok, 'deep array dump blocked (no throw)');
+}
+
+// Module-level dump is raw/low-level and may throw — documented behavior.
+{
+  const muc = { a: 1 }; muc.self = muc;
+  try { dump(muc); assert(false, 'module dump throws on circular'); }
+  catch (e) { assert(e instanceof YAMLException || /circular/i.test(e.message), 'module dump circular throw'); }
+}
+{
+  let deep = {};
+  let cursor = deep;
+  for (let i = 0; i < 120000; i++) { cursor.k = {}; cursor = cursor.k; }
+  try { dump(deep); assert(false, 'module dump throws on deep'); }
+  catch (e) { assert(e instanceof RangeError || /call stack|cannot/.test(e.message), 'module dump deep throws'); }
+}
 
 // ── parseToJSON ──
 const json = p.parseToJSON('a: 1');

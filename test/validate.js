@@ -270,5 +270,47 @@ function collectViolations(input, opts) {
   assert(Array.isArray(nullableRound.type) && nullableRound.type.includes('null'), 'toJSONSchema nullable');
 }
 
+// ReDoS guard: catastrophic patterns must be refused, safe ones must pass.
+{
+  const hazardous = [
+    [/^(a+)+b$/, 'group-repeat nested'],
+    [/^(a*)*x/, 'nullable repeat nested'],
+    [/^(a|aa)+z/, 'ambiguous alternation'],
+    [/^(a?)+b/, 'nullable solo nested'],
+    [/^(a|)+b/, 'empty alternation branch in repeat'],
+    [/^(\d+)+z/, 'class repeat nested'],
+    [/^a+a+z/, 'adjacent same repeats'],
+    [/^(ab|a)*z/, 'prefix-ambiguous alternation'],
+    [/^(a+)(a+)+z/, 'adjacent nested repeats'],
+    [/^(\w+)+z/, 'word repeat nested'],
+    [/^(a{1,3})*b/, 'bounded-then-unbounded nested'],
+  ];
+  for (const [re, name] of hazardous) {
+    let refused = false;
+    try { validate('abcz', s.string({ pattern: re })); }
+    catch (e) { refused = /unsafe regex pattern/.test(e.message); }
+    assert(refused, 'redos guard refuses ' + name);
+  }
+  const safe = [
+    [/^a+z/, 'plain repeat'],
+    [/^(ab|cd)+z/, 'disjoint literals in repeat'],
+    [/^(\d{1,3}(\.\d{1,3}){3})$/, 'ipv4 alternatives'],
+    [/^(name|id)$/, 'prefix-free names'],
+    [/^(a|b)+z/, 'disjoint chars in repeat'],
+    [/^a+b*c$/, 'sequential distinct repeats'],
+    [/^\w+\s*$/, 'word then space'],
+    [/^[^@\s]+@[^@\s]+\.[^@\s]+$/, 'email split by literals'],
+    [/^[a-z]{2,6}-[0-9]+$/, 'hyphen-separated ranges'],
+    [/^a+@b+$/, 'repeats separated by literal'],
+    [/^[a-z0-9_]+$/, 'tag range'],
+  ];
+  for (const [re, name] of safe) {
+    let ok = true;
+    try { validate('s', s.string({ pattern: re })); }
+    catch (e) { ok = false; console.error('FAIL: false-positive unsafe for', name, '->', e.message); }
+    assert(ok, 'redos guard allows ' + name);
+  }
+}
+
 console.log('Validation suite: ' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed === 0 ? 0 : 1);
