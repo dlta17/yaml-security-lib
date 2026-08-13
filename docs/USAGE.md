@@ -16,7 +16,7 @@ see the [README](../README.md); for how the library is built internally see
 npm install yaml-security-lib
 ```
 
-No runtime dependencies. Node.js ≥ 16 (CI-tested on 16, 18, 20, 22), all modern
+No runtime dependencies. Node.js ≥ 16 (CI-tested on 16, 18, 20, 22, 24), all modern
 browsers.
 
 | Style | Example |
@@ -307,7 +307,7 @@ Semantics to know:
 
 - **Is it really zero-dependency?** Yes — the runtime bundle has no imports
   (dev tooling differs).
-- **Which Node versions?** ≥ 16; CI matrix runs 16, 18, 20, 22.
+- **Which Node versions?** ≥ 16; CI matrix runs 16, 18, 20, 22, 24.
 - **Are there TypeScript types?** Yes — `.d.ts` for the main entry and each
   subpath (`core`/`validate`/`lint`).
 - **Which CDN files do I link?** `dist/yaml-security.min.js` (everything) or the

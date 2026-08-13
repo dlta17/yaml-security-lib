@@ -59,6 +59,7 @@
     "lint": "node bin/yaml-lint.js examples/basic.yaml",
     "prepack": "npm run build:cjs && npm run build:esm && npm run build:browser",
     "example": "node examples/basic.js",
+    "example:pipeline": "node examples/pipeline.mjs",
     "bench": "node bench/benchmark.js",
     "build": "npm run build:cjs && npm run build:esm && npm run build:browser",
     "build:cjs": "rollup -c --environment FORMAT:cjs",
@@ -82,6 +83,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dlta17/yaml-security-lib.git"
+  },
+  "homepage": "https://github.com/dlta17/yaml-security-lib#readme",
+  "bugs": {
+    "url": "https://github.com/dlta17/yaml-security-lib/issues"
   },
   "engines": {
     "node": ">=16.0.0"

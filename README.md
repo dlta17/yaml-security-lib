@@ -17,7 +17,7 @@
 - **Runaway strings/keys** — `maxStringLength` / `maxKeys` limits (opt-in)
 - **CPU-exhaustion via quadratic parsing** — flow collections (multi-line gathering and single-line item slicing) are linear-time in both the batch and streaming engines, so deep `a: [\n  x,\n …` inputs and huge single-line `[1,2,3,…]` sequences can't stall the parser
 
-Zero dependencies. Works in Node.js ≥16 (CI-tested on 16, 18, 20 and 22) and all modern browsers.
+Zero dependencies. Works in Node.js ≥16 (CI-tested on 16, 18, 20, 22 and 24) and all modern browsers.
 
 > **New here?** Start with the [Usage Guide](docs/USAGE.md) — practical recipes,
 > limit reference, troubleshooting, and FAQ.
