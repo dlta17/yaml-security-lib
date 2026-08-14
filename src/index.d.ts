@@ -7,6 +7,12 @@ export class YAMLException extends Error {
 export interface YamlSecurityOptions {
   /** Start from the hardened STRICT_DEFAULTS profile instead of the current global defaults. */
   strict?: boolean;
+  /**
+   * Max alias chain depth, measured at resolve time: resolving `*x` walks the
+   * anchor-source chain back to its root and rejects when hops exceed the
+   * limit. Catches chains hidden inside collections (`&a [*b]`,
+   * `key: &a\n v: *b`, merge keys), not just direct `&a *b`. `0` disables.
+   */
   maxAliasDepth?: number;
   maxNodes?: number;
   maxExpansion?: number;
@@ -22,6 +28,10 @@ export interface SetLimitsOptions {
    * given alongside `strict` override the corresponding profile value.
    */
   strict?: boolean;
+  /**
+   * Max alias chain depth, measured at resolve time (see
+   * {@link YamlSecurityOptions.maxAliasDepth}). `0` disables.
+   */
   maxAliasDepth?: number;
   maxNodes?: number;
   maxAlias?: number;

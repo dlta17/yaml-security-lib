@@ -267,7 +267,7 @@ globally via `setLimits`:
 |-------|----------|--------|---------|
 | `maxNodes` | `10000` | `5000` | Total nodes in a document (bomb gate) |
 | `maxAlias` | `100` | `20` | Distinct anchored values remembered |
-| `maxAliasDepth` | `10` | `5` | Alias reference depth (circular-alias gate) |
+| `maxAliasDepth` | `10` | `5` | Alias chain depth measured at **resolve time** — how many alias links a `*x` can walk to its root. Catches chains hidden inside flow/block collections (`&a [*b]`, nested block values, merge keys), not just direct `&a *b` |
 | `maxExpansion` | `100000` | `10000` | Alias expansion weight (Billion Laughs gate) |
 | `maxInputBytes` | `1048576` (1 MB) | same | Total input size |
 | `maxStringLength` | `0` (unlimited) | `1048576` | Single scalar length |
@@ -290,7 +290,7 @@ numbers depend on your active limits.
 | `…expansion limit exceeded (possible bomb) — reached N` | Aliases expanded past `maxExpansion` (Billion Laughs) | Keep default for untrusted input |
 | `…string length exceeds limit (N)` | A scalar longer than `maxStringLength` | Raise `maxStringLength` / `{ strict: true, maxStringLength: 0 }` |
 | `YAML: input too large (>1MB)` | Input exceeded `maxInputBytes` | Raise `maxInputMB` / `maxInputBytes` |
-| `YAML: alias depth exceeds limit (N)` | Alias reference chain deeper than `maxAliasDepth` | Default is fine for trusted docs; raise if your schema aliases deeply |
+| `YAML: alias depth exceeds limit (N)` | A resolved alias walks a chain deeper than `maxAliasDepth`. Counts every hop, including chains threaded through flow/block collections (`&a [*b]`, `key: &a\n v: *b`, merge keys), not just direct `&a *b` links | Default is fine for trusted docs; raise if your schema aliases deeply (e.g. proxy/graph documents that legitimately alias through collections). A chain exactly `==` the limit still parses |
 | `YAML: circular alias detected — "name"` | `&a … *a` self/cycle reference | Rewrite the YAML; this is always invalid |
 | `YAML: unresolved alias "*x" — no anchor with that name` | `*x` has no anchor (typo, or it belongs to an earlier document) | Anchors are document-scoped and aliases never fall back to a literal string — define the anchor in the same document or fix the name |
 | `YAML: alias node should not have any properties` | An anchor is applied to an alias node (`&a *b`, e.g. `- &a *b`) | Invalid per YAML spec; mirror of js-yaml/eemeli — remove the anchor from the alias node |

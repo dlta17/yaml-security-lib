@@ -161,7 +161,7 @@ Every check is enforced identically in both engines.
 | `maxNodes` | 10,000 | `track()` (batch), `_count()` (stream) |
 | `maxExpansion` | 100,000 | same (weighted, alias bombs) |
 | `maxAlias` | 100 | `resolveAlias()` / `_resolveAlias()` |
-| `maxAliasDepth` | 10 | `setAnchor()` / `_registerAnchor()` |
+| `maxAliasDepth` | 10 | resolve-time walk in `resolveAlias()` / `_resolveAlias()` |
 | `maxInputMB` / `maxInputBytes` | 1 MB | entry of `yamlToJS` / `parseAllYaml` / `write()` |
 | `maxStringLength` | 0 (unlimited) | `track()` / `_checkString()` |
 | `maxKeys` | 0 (unlimited) | `addKey()` / `_addMapKey()` / flow parsers |
@@ -201,8 +201,18 @@ override set to catch `<<` overwriting an explicit key.
 `track()`/`nodeWeight()` charge an aliased node's full subtree weight on every
 reference (`&a` + 100 `*a` grows the produced count geometrically) so
 billion-laughs style documents are rejected before expansion completes.
-`setAnchor` also tracks alias-source chains (`anchorSources`) and rejects
-circular aliases.
+`setAnchor`/`_registerAnchor` also track alias-source chains (`anchorSources`)
+and reject circular aliases. `maxAliasDepth` is enforced at **resolution**
+time: `resolveAlias`/`_resolveAlias` walk `anchorSources` back to the root and
+throw `alias depth exceeds limit (N)` when the hops exceed the limit. Because
+every `*alias` expands through that walk, chains threaded inside
+flow/block collections (`&a [*b]`, nested-block values, merge keys) are
+bounded identically — not just direct `&a *b` links. The true source edge is
+captured by a per-document build-stack (`_buildStack` / `ctx.buildSrc`): the
+deepest alias resolved while an anchorable value is being assembled is handed
+to `setAnchor`. The batch pre-scan's build frames are `try/finally`-balanced
+so a swallowed best-effort error can never leak a frame into the next
+document.
 
 Alias correctness rules (both engines, matching js-yaml/eemeli):
 

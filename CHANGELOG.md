@@ -9,6 +9,7 @@
 - **How the source edge is captured:** a per-document build-stack records the deepest alias resolved while any anchorable value is being assembled (flow collections, block values, nested blocks, root). `setAnchor` stores that source alongside the value, so `anchorSources` reflects the true graph and the resolve-time walk is exact. Every build site is balanced via `try/finally` (including the best-effort pre-scan, whose non-safety errors are swallowed), so an aborted parse can never leak a frame into the next document.
 - **Behaviour change:** a document whose *effective* alias chain exceeds the limit now errors even when every link is collection-wrapped or deferred into a nested block; values at exactly `==` the limit still parse (limits are strict-`>`). The direct `&a *b` form is unchanged (still rejected by the "alias node should not have any properties" rule), and `maxExpansion`/`maxNodes` remain independent guards.
 - **Tests:** new batch + stream cases — seq/map-wrap chains above the limit, `==`-limit acceptance with value-content checks, nested-block chains, deferred flow values (`key: &a\n  [*b]`), merge-key chains, and a pre-scan frame-leak regression (a swallowed non-safety error must not enable a later wrapped chain).
+- **Docs:** `docs/USAGE.md` limits + troubleshooting rows and `docs/ARCHITECTURE.md` §4.3/limits table now describe `maxAliasDepth` as the real resolve-time graph depth; `src/index.d.ts` documents the option (comment-only, no typing change).
 
 ## 1.17.6 (2026-08-14)
 
