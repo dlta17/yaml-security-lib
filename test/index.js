@@ -315,6 +315,37 @@ assert(json.result.includes('"a"'), 'parseToJSON has key');
 const strict = new YamlSecurity({ maxAliasDepth: 2 });
 assert(!strict.parse('&w hello\n&x *w\n&y *x\n&z *y\nb: *z').ok, 'constructor opts maxAliasDepth=2');
 
+// ── maxAliasDepth across flow/block collection wrapping (#8) ──
+// An alias chain threaded through collection values (`&a [*b]`, `{v: *b}`,
+// block values) escapes registration-time depth checks; it must be measured at
+// resolution time so `depth > maxAliasDepth` is enforced regardless of form.
+{
+  const wrapChain = (n, wrap) => {
+    let doc = 'a0: &a0 hello\n';
+    for (let i = 1; i <= n; i++) doc += 'a' + i + ': &a' + i + ' ' + wrap.replace('X', 'a' + (i - 1)) + '\n';
+    return doc + 'p: *a' + n;
+  };
+  assert(!new YamlSecurity({ maxAliasDepth: 2 }).parse(wrapChain(3, '[*X]')).ok, 'depth 3 via flow seq wraps (limit 2) blocked');
+  assert(new YamlSecurity({ maxAliasDepth: 2 }).parse(wrapChain(2, '[*X]')).ok, 'depth 2 via flow seq wraps (==limit) allowed');
+  assert(!new YamlSecurity({ maxAliasDepth: 5 }).parse(wrapChain(6, '{v: *X}')).ok, 'depth 6 via flow map wraps (limit 5) blocked');
+  assert(new YamlSecurity({ maxAliasDepth: 5 }).parse(wrapChain(5, '{v: *X}')).ok, 'depth 5 via flow map wraps (==limit) allowed');
+  // Nested block value with an alias on its own line (`key: &a\n  v: *b`).
+  {
+    let doc = 'a0: &a0 hello\n';
+    for (let i = 1; i <= 4; i++) doc += 'a' + i + ': &a' + i + '\n  v: *a' + (i - 1) + '\n';
+    doc += 'p: *a4';
+    assert(!new YamlSecurity({ maxAliasDepth: 2 }).parse(doc).ok, 'depth 4 via nested block value (limit 2) blocked');
+    assert(new YamlSecurity({ maxAliasDepth: 2 }).parse(wrapChain(2, '{v: *X}')).ok, 'boundary sanity: depth 2 block value allowed');
+  }
+  // Values are still produced correctly for legitimate wrapped aliases.
+  const okWrapped = new YamlSecurity({ maxAliasDepth: 10 }).parse('a0: &a0 hello\na1: &a1 [*a0]\na2: &a2 {v: *a1}\np: *a2');
+  assert(okWrapped.ok, 'legit wrapped chain parses');
+  if (okWrapped.ok) {
+    assertEqual(okWrapped.result.p, { v: ['hello'] }, 'wrapped alias value resolves correctly');
+    assertEqual(okWrapped.result.a2, { v: ['hello'] }, 'wrapped anchor value resolves correctly');
+  }
+}
+
 // ── Billion Laughs protection ──
 const billionLaughs = '&a lol\nb: &b [*a, *a]\nc: &c [*b, *b]\nd: &d [*c, *c]\ne: &e [*d, *d]\nf: &f [*e, *e]\ng: &g [*f, *f]\nh: &h [*g, *g]\ni: &i [*h, *h]\nj: &j [*i, *i]\nk: &k [*j, *j]\nl: &l [*k, *k]\nm: &m [*l, *l]\nn: &n [*m, *m]\no: &o [*n, *n]\np: *o';
 assert(!p.parse(billionLaughs).ok, 'Billion Laughs (16 levels) blocked');

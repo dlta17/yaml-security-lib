@@ -556,7 +556,42 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
     if (++state.aliasHits > cfg.maxAlias) throw new YAMLException('YAML: alias expansion limit exceeded (bomb)');
     if (!Object.prototype.hasOwnProperty.call(anchors, aname))
       throw new YAMLException('YAML: unresolved alias "*' + aname + '" — no anchor with that name');
+    // Measure the alias graph depth at resolution time: walk the
+    // `anchorSources` chain from the resolved anchor to its root and count the
+    // hops. Registration-time depth only sees direct `&a *b` links; a chain
+    // threaded through flow/block collections (`&a [*b]`) is only measurable
+    // here, so a true chain longer than maxAliasDepth is rejected regardless of
+    // how it was built.
+    if (cfg.maxAliasDepth > 0) {
+      let cur = aname;
+      let hops = 0;
+      while ((cur = anchorSources[cur])) hops++;
+      if (hops > cfg.maxAliasDepth)
+        throw new YAMLException('YAML: alias depth exceeds limit (' + cfg.maxAliasDepth + '), possible anchor bomb');
+    }
+    buildNote(aname);
     return anchors[aname];
+  }
+
+  // ── Anchor build-stack ──────────────────────────────────
+  // While a node value that may register an anchor is being built (a flow
+  // collection, a block value, a sub-document), the deepest alias resolved
+  // during that build is recorded so `setAnchor` can record a true `*source`
+  // edge even when the value is a collection wrapping an alias (`&a [*b]`),
+  // not a direct `&a *b`. This makes `anchorSources` correct and lets both the
+  // registration check and the resolve-time walk bound chained aliases.
+  const buildStack = (state._buildStack = state._buildStack || []);
+  function buildPush() {
+    buildStack.push(null);
+  }
+  function buildNote(aname) {
+    if (buildStack.length === 0) return;
+    const top = buildStack[buildStack.length - 1];
+    if (top === null || (anchorDepths[aname] || 0) > (anchorDepths[top] || 0))
+      buildStack[buildStack.length - 1] = aname;
+  }
+  function buildPop() {
+    return buildStack.length ? buildStack.pop() : null;
   }
 
   // ── AST event collection ────────────────────────────────
@@ -1335,10 +1370,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
             aAlias(aname);
             key = track(resolveAlias(aname));
           } else if (/^[\[{]/.test(keyToken)) {
+            buildPush();
             const kr = parseInlineFlow(keyToken, _flowDepth + 1, _line, false, true, true, anchorName);
+            const recSrc = buildPop();
             if (kr.endPos === keyToken.length && kr.value !== undefined) {
               key = kr.value;
-              if (anchorName) setAnchor(anchorName, track(key));
+              if (anchorName) setAnchor(anchorName, track(key), recSrc);
             } else {
               emitPropsScalar(rawKeyTok);
               key = rawKeyTok;
@@ -1401,9 +1438,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
         if (typeof val === 'string' && val.startsWith('&')) {
           const aname = val.slice(1).split(/[ ,\]}]/)[0];
           const rest = val.slice(aname.length + 1).trim();
+          buildPush();
           const rr = parseInlineFlow(rest, _flowDepth + 1, _line);
+          const recSrc = buildPop();
           const anchored = track(rr.value);
-          const srcAnchor = rest.startsWith('*') ? rest.slice(1).split(/[ ,}\]]/)[0] : null;
+          const maybeSrc = rest.startsWith('*') ? rest.slice(1).split(/[ ,}\]]/)[0] : null;
+          const srcAnchor = maybeSrc || recSrc;
           setAnchor(aname, anchored, srcAnchor);
           safeAssign(obj, key, anchored);
           i += aname.length + 1 + rr.endPos;
@@ -1437,11 +1477,13 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
       // An anchor directly attached to an alias is invalid.
       if (rest.startsWith('*'))
         throw new YAMLException('YAML: alias node should not have any properties');
+      buildPush();
       const r = rest ? parseInlineFlow(rest, _flowDepth + 1, _line, false, false, false, aname, _astTag) : { value: null, endPos: 0 };
+      const recSrc = buildPop();
       if (!rest) aScalar('', AST_PLAIN, aname, _astTag);
       const val = track(r.value !== undefined ? r.value : rest);
-      const restTrimmed = rest.trim();
-      const srcAnchor = restTrimmed.startsWith('*') ? restTrimmed.slice(1).split(/[ ,}\]]/)[0] : null;
+      const maybeSrc = rest.startsWith('*') ? rest.slice(1).split(/[ ,}\]]/)[0] : null;
+      const srcAnchor = maybeSrc || recSrc;
       setAnchor(aname, val, srcAnchor);
       return { value: val, endPos: 1 + aname.length + wsLen + r.endPos };
     }
@@ -1968,8 +2010,17 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
           setAnchor(aname, val, srcAnchor);
         } else if (rest.startsWith('[') || rest.startsWith('{')) {
           if (flowClosed(rest)) {
-            const flowResult = parseInlineFlow(rest);
-            setAnchor(aname, flowResult.value !== undefined ? flowResult.value : track(parseScalar(rest)));
+            // Best-effort pre-scan value is built in a frame whose pop must
+            // always happen (the outer try/catch swallows non-safety errors).
+            buildPush();
+            let recSrc = null;
+            try {
+              const flowResult = parseInlineFlow(rest);
+              recSrc = buildPop();
+              setAnchor(aname, flowResult.value !== undefined ? flowResult.value : track(parseScalar(rest)), recSrc);
+            } finally {
+              if (recSrc === null) buildPop();
+            }
           }
         } else if (rest.includes(':')) {
           const indent = getIndent(line);
@@ -1977,7 +2028,15 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
             .filter(l => getIndent(l) > indent)
             .map(l => l.slice(indent))
             .join('\n');
-          setAnchor(aname, track(yamlToJS(dummy, cfg, _depth + 1, _schema, state, tags, blockDepth + 1)));
+          buildPush();
+          let recSrc = null;
+          try {
+            const preVal = track(yamlToJS(dummy, cfg, _depth + 1, _schema, state, tags, blockDepth + 1));
+            recSrc = buildPop();
+            setAnchor(aname, preVal, recSrc);
+          } finally {
+            if (recSrc === null) buildPop();
+          }
         } else {
           setAnchor(aname, track(parseScalar(rest)));
         }
@@ -2223,6 +2282,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
         if (dashAnchorMatch) {
           const rest = dashAnchorMatch[2] ? dashAnchorMatch[2].trim() : '';
           let value;
+          buildPush();
           if (rest === '') {
             aScalar('', AST_PLAIN, dashAnchorMatch[1]);
             value = track(null);
@@ -2233,7 +2293,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
             aAlias(rest.slice(1).trim());
             throw new YAMLException('YAML: alias node should not have any properties');
           } else value = track(parseInlineValue(rest, false, dashAnchorMatch[1]));
-          setAnchor(dashAnchorMatch[1], value);
+          const recSrc = buildPop();
+          setAnchor(dashAnchorMatch[1], value, recSrc);
           seq.push(value);
         } else if (dashContent.startsWith('*')) {
           const an = dashContent.slice(1).replace(/[ \t]#.*$/, '').trim();
@@ -2430,10 +2491,12 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
             const keyAnchorName = km ? km[1] : null;
             const keyToken = (km ? km[2] : key).trim();
             if ((keyToken.startsWith('[') || keyToken.startsWith('{')) && keyToken.length > 1) {
+              buildPush();
               const kr = parseInlineFlow(keyToken, 0, currentLine, false, true, true, keyAnchorName);
+              const recSrc = buildPop();
               if (kr.endPos === keyToken.length && kr.value !== undefined) {
                 key = kr.value;
-                if (keyAnchorName) setAnchor(keyAnchorName, track(key));
+                if (keyAnchorName) setAnchor(keyAnchorName, track(key), recSrc);
                 keyAstDone = true;
               }
             }
@@ -2657,14 +2720,16 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
             const blockTag = firstProps.tag ||
               (valueTag || bareTagName ? (valueTag || bareTagName).startsWith('!!') ? fullTagName(valueTag || bareTagName) : expandTag(valueTag || bareTagName) : null);
             addKey(key);
+            buildPush();
             const fv = parseInlineFlow(flowText);
+            const recSrc = buildPop();
             let fval = fv.value !== undefined ? fv.value : parseScalar(flowText);
             if (blockTag && typeof fval === 'string') {
               const type = _schema._explicit[blockTag];
               if (type) fval = type.construct(fval);
             }
             const tracked = track(fval);
-            if (blockAnchor) setAnchor(blockAnchor, tracked);
+            if (blockAnchor) setAnchor(blockAnchor, tracked, recSrc);
             safeAssign(result, key, tracked);
             i = blockEnd - 1;
           } else if (isScalarBlock) {
@@ -2679,26 +2744,31 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
             addKey(key);
             const foldedTrim = folded.trim();
             let sval;
+            let scalarSrc = null;
             const contentCount = ls.slice(valueBlockStart, blockEnd)
               .filter(l => l.trim() !== '' && !l.trim().startsWith('#')).length;
             if (contentCount === 1 && /^\*[^\s]+[ \t]*$/.test(foldedTrim)) {
-              aAlias(foldedTrim.slice(1).replace(/[ \t#].*$/, '').trim());
-              sval = track(resolveAlias(foldedTrim.slice(1).replace(/[ \t#].*$/, '').trim()));
+              const aliasName = foldedTrim.slice(1).replace(/[ \t#].*$/, '').trim();
+              aAlias(aliasName);
+              sval = track(resolveAlias(aliasName));
+              scalarSrc = aliasName;
             } else {
               aScalar(astScalarString(folded), astStyleFromRaw(folded), blockAnchor, blockTag);
               sval = track(parseScalar(folded));
             }
-            if (blockAnchor) setAnchor(blockAnchor, sval);
+            if (blockAnchor) setAnchor(blockAnchor, sval, scalarSrc);
             safeAssign(result, key, sval);
             i = blockEnd - 1;
           } else {
             const blockTagName = valueTag || bareTagName;
+            buildPush();
             const sub = parseBlock(valueBlockStart, nestedBase, ls, blockDepth + 1, explicitValueMode, blockEnd,
               valueAnchor || bareAnchorName, blockTagName ? (blockTagName.startsWith('!!') ? fullTagName(blockTagName) : expandTag(blockTagName)) : null);
+            const recSrc = buildPop();
             addKey(key);
             const tracked = track(sub);
-            if (valueAnchor) setAnchor(valueAnchor, tracked);
-            if (bareAnchorName) setAnchor(bareAnchorName, tracked);
+            if (valueAnchor) setAnchor(valueAnchor, tracked, recSrc);
+            if (bareAnchorName) setAnchor(bareAnchorName, tracked, recSrc);
             safeAssign(result, key, tracked);
             i = blockEnd - 1;
           }
@@ -2873,6 +2943,7 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
       }
     }
     const rest = restLines.join('\n').trim();
+    buildPush();
     let value;
     if (rest === '') {
       value = null;
@@ -2920,7 +2991,8 @@ function yamlToJS(yamlStr, cfg, _depth, _schema, _state, _tags, blockDepth) {
       const type = _schema._explicit[rootTagFull];
       if (type && typeof value === 'string') value = type.construct(value);
     }
-    if (rootAnchor) setAnchor(rootAnchor, value);
+    const rootSrc = buildPop();
+    if (rootAnchor) setAnchor(rootAnchor, value, rootSrc);
     result = track(value);
   } else if (topContent.startsWith('[') || topContent.startsWith('{')) {
     let closePos = -1;
@@ -4888,9 +4960,11 @@ class StreamParser {
     const ctx = {
       kind: 'map', indent, keys: new Set(), pendingKey: null, expectValue: false,
       valueAnchor: null, anchor: null, mergeOverride: null, plainValueLines: null,
+      buildSrc: null,
       node: this.buffered ? {} : null,
     };
     this.stack.push(ctx);
+    this._buildPush();
     return ctx;
   }
 
@@ -4901,10 +4975,12 @@ class StreamParser {
       throw this._err('nesting depth exceeds limit (' + this.cfg.maxDepth + ')');
     const ctx = {
       kind: 'seq', indent, pendingItem: false, pendingEmpty: false, valueAnchor: null, anchor: null,
+      buildSrc: null,
       lastInlineIndex: -1, replaceInline: -1,
       node: this.buffered ? [] : null,
     };
     this.stack.push(ctx);
+    this._buildPush();
     return ctx;
   }
 
@@ -4913,6 +4989,7 @@ class StreamParser {
   // attach the assembled node to its parent.
   _closeTop() {
     const ctx = this.stack.pop();
+    const recSrc = this._buildPop();
     if (ctx.kind === 'map') {
       this._finishPlainValue(ctx);
       if (ctx.pendingKey !== null) {
@@ -4922,7 +4999,7 @@ class StreamParser {
         this._assignValue(ctx, null);
       }
       this._finalizeMap(ctx);
-      if (ctx.anchor) this._registerAnchor(ctx.anchor, ctx.node);
+      if (ctx.anchor) this._registerAnchor(ctx.anchor, ctx.node, recSrc);
       this._emit('mappingEnd');
       this._attachToParent(ctx);
     } else {
@@ -4933,7 +5010,7 @@ class StreamParser {
           this._emitScalar(ctx, null, '');
         }
       }
-      if (ctx.anchor) this._registerAnchor(ctx.anchor, ctx.node);
+      if (ctx.anchor) this._registerAnchor(ctx.anchor, ctx.node, recSrc);
       this._emit('sequenceEnd');
       this._attachToParent(ctx);
     }
@@ -5160,8 +5237,9 @@ class StreamParser {
   // has been produced.
   _registerValueAnchor(ctx, value) {
     if (ctx.valueAnchor) {
-      this._registerAnchor(ctx.valueAnchor, value);
+      this._registerAnchor(ctx.valueAnchor, value, ctx.buildSrc || undefined);
       ctx.valueAnchor = null;
+      ctx.buildSrc = null;
     }
   }
 
@@ -5206,7 +5284,39 @@ class StreamParser {
       throw this._err('YAML: alias expansion limit exceeded (bomb)');
     if (!this.anchors.has(name))
       throw this._err('YAML: unresolved alias "*' + name + '" — no anchor with that name');
+    // Measure the alias graph depth at resolution time (see batch resolveAlias).
+    if (this.cfg.maxAliasDepth > 0) {
+      let cur = name;
+      let hops = 0;
+      while ((cur = this.anchorSources.get(cur))) hops++;
+      if (hops > this.cfg.maxAliasDepth)
+        throw this._err('YAML: alias depth exceeds limit (' + this.cfg.maxAliasDepth + '), possible anchor bomb');
+    }
+    this._buildNote(name);
     return this.anchors.get(name);
+  }
+
+  // ── Anchor build-stack ──────────────────────────────────
+  // While a node value that may register an anchor is being built (a flow
+  // collection through _parseFlowEmitting/_emitFlow, or a nested block context
+  // through _openMap/_openSeq), the deepest alias resolved records into the
+  // top frame so `_registerAnchor` can capture the true `*source` edge even for
+  // collection-wrapped aliases (`&a [*b]`, `key: &a\n  v: *b`).
+  _buildPush() {
+    const s = this._buildStack || (this._buildStack = []);
+    s.push(null);
+  }
+  _buildNote(name) {
+    const s = this._buildStack;
+    if (!s || s.length === 0) return;
+    const top = s[s.length - 1];
+    const d = this.anchorDepths.get(name);
+    const td = top === null ? -1 : (this.anchorDepths.get(top) || 0);
+    if (top === null || (d === undefined ? 0 : d) > td) s[s.length - 1] = name;
+  }
+  _buildPop() {
+    const s = this._buildStack;
+    return s && s.length ? s.pop() : null;
   }
 
   // Drop every anchor/alias binding. Anchors are document-scoped: an alias in
@@ -5217,6 +5327,7 @@ class StreamParser {
     this.anchors = new Map();
     this.anchorDepths = new Map();
     this.anchorSources = new Map();
+    this._buildStack = [];
   }
 
   // Collect one line into the active block scalar (pendingBlock). A line at or
@@ -5306,8 +5417,11 @@ class StreamParser {
   // Parse and emit a complete flow collection as a value in `ctx`, registering
   // its anchor and assigning it into the context's node.
   _emitFlow(ctx, str, anchor) {
+    this._buildPush();
     const r = this._parseFlowEmitting(str, 0);
-    if (anchor) this._registerAnchor(anchor, r.value);
+    const recSrc = this._buildPop();
+    if (anchor) this._registerAnchor(anchor, r.value, recSrc);
+    if (recSrc) ctx.buildSrc = recSrc;
     this._assignValue(ctx, r.value);
     this._registerValueAnchor(ctx, r.value);
     return r.value;
@@ -5490,8 +5604,10 @@ class StreamParser {
       const wsLen = afterName.length - rest.length;
       if (this.anchorMode === 'disable') throw this._err('anchors are disabled in streaming mode');
       if (rest) {
+        this._buildPush();
         const r = this._parseFlowEmitting(rest, _depth + 1);
-        this._registerAnchor(aname, r.value);
+        const recSrc = this._buildPop();
+        this._registerAnchor(aname, r.value, recSrc);
         return { value: r.value, endPos: 1 + aname.length + wsLen + r.endPos };
       }
       this._registerAnchor(aname, null);

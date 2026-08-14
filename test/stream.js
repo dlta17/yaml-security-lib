@@ -306,6 +306,32 @@ function testLimits() {
 }
 testLimits();
 
+// ── maxAliasDepth across flow/block collection wrapping (parity with #8) ──
+function testAliasDepthWrapped() {
+  const wrapChain = (n, wrap) => {
+    let doc = 'a0: &a0 hello\n';
+    for (let i = 1; i <= n; i++) doc += 'a' + i + ': &a' + i + ' ' + wrap.replace('X', 'a' + (i - 1)) + '\n';
+    return doc + 'p: *a' + n;
+  };
+  const throwsOn = (src) => {
+    const s = createStream({ maxAliasDepth: 2 });
+    try { s.write(src); s.end(); } catch (e) { return true; }
+    return false;
+  };
+  if (!throwsOn(wrapChain(3, '[*X]'))) { fail++; fails.push('stream: depth 3 via flow seq wraps (limit 2) not blocked'); } else pass++;
+  if (throwsOn(wrapChain(2, '[*X]'))) { fail++; fails.push('stream: depth 2 via flow seq wraps (==limit) should be allowed'); } else pass++;
+  if (!throwsOn(wrapChain(4, '{v: *X}'))) { fail++; fails.push('stream: depth 4 via flow map wraps (limit 2) not blocked'); } else pass++;
+
+  // Anchor on the key line with the alias inside a deferred flow value.
+  const deferred = 'a0: &a0 hello\na1: &a1\n  [*a0]\na2: &a2\n  [*a1]\na3: &a3\n  [*a2]\np: *a3';
+  if (!throwsOn(deferred)) { fail++; fails.push('stream: depth 4 via deferred flow value (limit 2) not blocked'); } else pass++;
+
+  // Anchor on the key line with the alias inside a nested block mapping.
+  const nested = 'a0: &a0 hello\na1: &a1\n  v: *a0\na2: &a2\n  v: *a1\na3: &a3\n  v: *a2\na4: &a4\n  v: *a3\np: *a4';
+  if (!throwsOn(nested)) { fail++; fails.push('stream: depth 5 via nested block value (limit 2) not blocked'); } else pass++;
+}
+testAliasDepthWrapped();
+
 function testClass() {
   const ys = new YamlSecurity();
   const s = ys.createStream();
