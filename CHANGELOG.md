@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.17.7 (2026-08-14)
+
+### Fix & hardening: `maxAliasDepth` is now true resolve-time graph depth
+
+- **`maxAliasDepth` previously only counted direct `&a *b` links.** A chain threaded through a flow or block collection — `&a [*b]`, `key: &a\n  v: *b`, `x: &a {<<: *b}` — registered depth 0/1 and could climb without bound (`&a [*b]`, `&b [*a]`, …). That anchor-bomb family was closed only by `maxExpansion`/`maxNodes` at high values, not by the depth cap.
+- **Depth is now measured when an alias resolves**, in both engines: resolving `*x` walks the anchor-source chain (`anchorSources`) from `x` to its root and rejects when the hop count exceeds `maxAliasDepth` (`YAML: alias depth exceeds limit (N), possible anchor bomb`). Because the walk happens at resolution time, it sees every edge regardless of how the anchor value was built — direct, flow-wrapped, nested-block, or merge-key chains.
+- **How the source edge is captured:** a per-document build-stack records the deepest alias resolved while any anchorable value is being assembled (flow collections, block values, nested blocks, root). `setAnchor` stores that source alongside the value, so `anchorSources` reflects the true graph and the resolve-time walk is exact. Every build site is balanced via `try/finally` (including the best-effort pre-scan, whose non-safety errors are swallowed), so an aborted parse can never leak a frame into the next document.
+- **Behaviour change:** a document whose *effective* alias chain exceeds the limit now errors even when every link is collection-wrapped or deferred into a nested block; values at exactly `==` the limit still parse (limits are strict-`>`). The direct `&a *b` form is unchanged (still rejected by the "alias node should not have any properties" rule), and `maxExpansion`/`maxNodes` remain independent guards.
+- **Tests:** new batch + stream cases — seq/map-wrap chains above the limit, `==`-limit acceptance with value-content checks, nested-block chains, deferred flow values (`key: &a\n  [*b]`), merge-key chains, and a pre-scan frame-leak regression (a swallowed non-safety error must not enable a later wrapped chain).
+
 ## 1.17.6 (2026-08-14)
 
 ### Fix & hardening: alias/anchor correctness + schema ReDoS guard

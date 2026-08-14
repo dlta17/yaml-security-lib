@@ -167,7 +167,7 @@ import { lint } from 'yaml-security-lib/lint'
 | Option | Default | Description |
 |--------|---------|-------------|
 | `strict` | `false` | Start from the hardened strict profile instead of the current defaults. See "Strict profile" below |
-| `maxAliasDepth` | `10` | Max anchor indirection depth |
+| `maxAliasDepth` | `10` | Max alias chain depth, measured as **graph depth at resolution time**: resolving `*x` walks the anchor-source chain back to its root and rejects when the hops exceed the limit. This catches chains threaded through collections (`&a [*b]`, `key: &a\n  v: *b`, `&a {<<: *b}`), not just direct `&a *b` links |
 | `maxAlias` | `100` | Max total alias expansions |
 | `maxDepth` | `50` | Max nesting depth of block collections (mappings + sequences). Flow `[...]`/`{...}` don't count; `0` disables. See "How `maxDepth` is counted" below |
 | `maxNodes` | `10000` | Max parsed nodes before abort |
@@ -401,7 +401,7 @@ Aliases require remembering the anchored node, which conflicts with true constan
 - `anchors: 'buffer'` (default) — anchors/aliases are supported; anchored values are buffered in memory until resolved.
 - `anchors: 'disable'` — any `&`/`*` is rejected immediately for **true zero-buffering** (fully constant-memory streaming for anchor-free documents).
 
-**Anchor rules** (batch and stream, consistent): anchors are **document-scoped** — an alias in one document that references an anchor from an earlier document is rejected (`unresolved alias`); each document starts a fresh anchor table. An alias with **no anchor at all** is an error (`YAML: unresolved alias "*x" — no anchor with that name`), never a literal string fallback. An anchor applied to an **alias node** (`&a *b`, e.g. a bare root, a sequence item `- &a *b`, or a mapping value `x: &a *b`) is rejected with `YAML: alias node should not have any properties`, matching js-yaml/eemeli; self-references (`&a *a`, `&a *b\n&b *a`) fail with `YAML: circular alias detected`. Block anchor chains (`&a hello\n&b *a\n…`) are supported and bounded by `maxAliasDepth`.
+**Anchor rules** (batch and stream, consistent): anchors are **document-scoped** — an alias in one document that references an anchor from an earlier document is rejected (`unresolved alias`); each document starts a fresh anchor table. An alias with **no anchor at all** is an error (`YAML: unresolved alias "*x" — no anchor with that name`), never a literal string fallback. An anchor applied to an **alias node** (`&a *b`, e.g. a bare root, a sequence item `- &a *b`, or a mapping value `x: &a *b`) is rejected with `YAML: alias node should not have any properties`, matching js-yaml/eemeli; self-references (`&a *a`, `&a *b\n&b *a`) fail with `YAML: circular alias detected`. Block anchor chains (`&a hello\n&b *a\n…`) are supported and bounded by `maxAliasDepth`, which measures the chain at **resolution time** — so chains hidden inside flow/block collections (`&a [*b]`, `key: &a\n  v: *b`, merge keys `&a {<<: *b}`) are rejected at the same depth limit, not just direct `&a *b` links.
 
 ### `YamlSecurity.createStream()` / `YamlSecurity.parseStream()`
 
