@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.17.8 (2026-08-14)
+
+### Docs-only: npm page badge + `.d.ts` comments
+
+- **Snyk Security Score badge** added to the README badge row; re-published so the npm package page shows it (npm renders the README from the published tarball).
+- `src/index.d.ts` now carries JSDoc comments on `maxAliasDepth` (resolve-time graph depth) in both option interfaces — comment-only, no typing change.
+- No library behaviour, runtime, or bundle changes.
+
 ## 1.17.7 (2026-08-14)
 
 ### Fix & hardening: `maxAliasDepth` is now true resolve-time graph depth
